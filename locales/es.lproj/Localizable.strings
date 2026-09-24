@@ -6,6 +6,7 @@
 "bold.short_bold" = "Negrita";
 "bold.short_both" = "Normal + negrita";
 "bold.short_regular" = "Normal";
+"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
 "error.failed_to_inspect_passthm_file" = "No se ha podido analizar el archivo .passthm";
 "error.failed_to_package_theme_for" = "No se ha podido preparar el tema para aplicarlo.";
 "error.no_backup_for_card" = "Esta tarjeta no tiene ninguna imagen original guardada, así que no se puede restaurar.";
@@ -43,6 +44,7 @@
 "status.complete_all_cards_updated" = "¡Listo! Todas las tarjetas actualizadas.";
 "status.connected_to" = "Conectado a %@";
 "status.could_not_start_card_scanning" = "No se ha podido iniciar la búsqueda de tarjetas.";
+"status.detection_could_not_run" = "Device detection could not run. See the log.";
 "status.device_tools_are_missing_from" = "Faltan las herramientas de dispositivo en esta versión.";
 "status.double_click_side_button_pass" = "Pulsa dos veces el botón lateral, valida con Face ID y toca la tarjeta…";
 "status.failed_to_apply_card_skins" = "No se han podido aplicar los diseños de las tarjetas.";
@@ -147,7 +149,7 @@
 "ui.on_your_iphone_double_click" = "En el iPhone, **pulsa dos veces el botón lateral** (Apple Pay), autentícate con **Face ID** y **toca la tarjeta**.";
 "ui.original_saved" = "Hay una imagen original guardada";
 "ui.passcode_theme_file" = "Archivo de tema de código";
-"ui.passcode_theme_successfully_applied_n" = "¡Tema de código aplicado!\\n\\nBloquea el iPhone (o reinícialo) para ver el nuevo teclado del código.";
+"ui.passcode_theme_successfully_applied_n" = "¡Tema de código aplicado!\\\\n\\\\nBloquea el iPhone (o reinícialo) para ver el nuevo teclado del código.";
 "ui.passcode_themes" = "Temas de código:";
 "ui.passthm_standard_cowabunga_nugget" = "Estándar .passthm (Cowabunga / Nugget)";
 "ui.paste_one_or_more_card" = "Pega uno o más hashes de tarjeta (separados por espacios, comas o saltos de línea):";
@@ -169,10 +171,11 @@
 "ui.select_all" = "Seleccionar todo";
 "ui.set_skin_for_all" = "Asignar diseño a todas…";
 "ui.skin_assigned_and_ready" = "Diseño asignado y listo";
-"ui.skins_successfully_applied_to_all" = "¡Diseños aplicados a todas las tarjetas seleccionadas!\\n\\nFuerza el cierre de la app Wallet en el iPhone (o reinícialo) para ver los nuevos diseños.";
+"ui.skins_successfully_applied_to_all" = "¡Diseños aplicados a todas las tarjetas seleccionadas!\\\\n\\\\nFuerza el cierre de la app Wallet en el iPhone (o reinícialo) para ver los nuevos diseños.";
 "ui.slice_circle_desc" = "La imagen se recorta en iconos circulares para cada tecla.";
 "ui.slice_seamless_desc" = "La imagen se extiende por todas las teclas sin recortes circulares (estilo Adobe Dog).";
 "ui.slicing_style" = "Estilo de recorte";
+"ui.something_went_wrong" = "Something went wrong";
 "ui.start_scanning" = "Iniciar búsqueda";
 "ui.stop_scanning" = "Detener búsqueda";
 "ui.success" = "¡Listo!";

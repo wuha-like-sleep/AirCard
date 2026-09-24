@@ -847,8 +847,16 @@ class AppViewModel: ObservableObject {
 
                 guard !list.isEmpty else {
                     self.device = nil
+                    self.backedUpCards = []
                     self.isCheckingDevice = false
-                    if response?.error == "device_helper_missing" {
+                    if response == nil {
+                        // Nothing parseable came back, so the backend did not run.
+                        // Saying "no iPhone" sends people to replug a phone that
+                        // was never the problem.
+                        self.statusText = L("status.detection_could_not_run", "Device detection could not run. See the log.")
+                        self.errorMessage = L("error.backend_unavailable", "AirCard could not run its device tools. The app may be damaged or incompletely installed.")
+                        self.log("Device detection returned nothing usable.")
+                    } else if response?.error == "device_helper_missing" {
                         self.statusText = L("status.device_tools_are_missing_from", "Device tools are missing from this build.")
                         self.log("Bundled device_helper not found — detection cannot run.")
                     } else {
@@ -2066,6 +2074,14 @@ struct ContentView: View {
                 .background(Color(NSColor.controlBackgroundColor))
         }
         .frame(minWidth: 880, minHeight: 680)
+        .alert(L("ui.something_went_wrong", "Something went wrong"), isPresented: Binding(
+            get: { vm.errorMessage != nil },
+            set: { if !$0 { vm.errorMessage = nil } }
+        )) {
+            Button(L("ui.ok", "OK")) { vm.errorMessage = nil }
+        } message: {
+            Text(vm.errorMessage ?? "")
+        }
         .alert(L("ui.success", "Success!"), isPresented: $vm.showSuccessAlert) {
             Button(L("ui.ok", "OK")) {}
         } message: {

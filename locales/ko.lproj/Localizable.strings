@@ -6,6 +6,7 @@
 "bold.short_bold" = "굵게";
 "bold.short_both" = "일반 + 굵게";
 "bold.short_regular" = "일반";
+"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
 "error.failed_to_inspect_passthm_file" = ".passthm 파일을 확인하지 못했습니다";
 "error.failed_to_package_theme_for" = "적용할 테마를 준비하지 못했습니다.";
 "error.no_backup_for_card" = "이 카드는 저장된 원본이 없어 복원할 수 없습니다.";
@@ -43,6 +44,7 @@
 "status.complete_all_cards_updated" = "완료! 모든 카드가 업데이트되었습니다.";
 "status.connected_to" = "%@에 연결됨";
 "status.could_not_start_card_scanning" = "카드 스캔을 시작할 수 없습니다.";
+"status.detection_could_not_run" = "Device detection could not run. See the log.";
 "status.device_tools_are_missing_from" = "이 버전에는 기기 도구가 포함되어 있지 않습니다.";
 "status.double_click_side_button_pass" = "측면 버튼을 두 번 누르고 Face ID로 인증한 다음 카드를 탭하십시오...";
 "status.failed_to_apply_card_skins" = "카드 스킨을 적용하지 못했습니다.";
@@ -147,7 +149,7 @@
 "ui.on_your_iphone_double_click" = "iPhone에서 **측면 버튼을 두 번 누르고**(Apple Pay) **Face ID**로 인증한 다음 **카드를 탭**하십시오.";
 "ui.original_saved" = "원본 아트워크 저장됨";
 "ui.passcode_theme_file" = "암호 테마 파일";
-"ui.passcode_theme_successfully_applied_n" = "암호 테마를 적용했습니다!\\\\n\\\\niPhone을 잠갔다 켜거나 재시동하면 새 암호 키패드가 나타납니다.";
+"ui.passcode_theme_successfully_applied_n" = "암호 테마를 적용했습니다!\\\\\\\\n\\\\\\\\niPhone을 잠갔다 켜거나 재시동하면 새 암호 키패드가 나타납니다.";
 "ui.passcode_themes" = "암호 테마:";
 "ui.passthm_standard_cowabunga_nugget" = ".passthm 표준 (Cowabunga / Nugget)";
 "ui.paste_one_or_more_card" = "카드 해시를 하나 이상 붙여넣으십시오(공백, 쉼표, 줄바꿈으로 구분):";
@@ -169,10 +171,11 @@
 "ui.select_all" = "모두 선택";
 "ui.set_skin_for_all" = "모든 카드에 스킨 지정...";
 "ui.skin_assigned_and_ready" = "스킨 지정 완료";
-"ui.skins_successfully_applied_to_all" = "선택한 모든 카드에 스킨을 적용했습니다!\\\\n\\\\niPhone에서 지갑 앱을 강제 종료하거나 재시동하면 새 디자인이 나타납니다.";
+"ui.skins_successfully_applied_to_all" = "선택한 모든 카드에 스킨을 적용했습니다!\\\\\\\\n\\\\\\\\niPhone에서 지갑 앱을 강제 종료하거나 재시동하면 새 디자인이 나타납니다.";
 "ui.slice_circle_desc" = "아트워크를 원형 버튼 아이콘으로 하나씩 잘라냅니다.";
 "ui.slice_seamless_desc" = "아트워크가 원형으로 잘리지 않고 키패드 전체에 이어집니다(Adobe Dog 스타일).";
 "ui.slicing_style" = "분할 방식";
+"ui.something_went_wrong" = "Something went wrong";
 "ui.start_scanning" = "스캔 시작";
 "ui.stop_scanning" = "스캔 중단";
 "ui.success" = "성공!";

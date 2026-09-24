@@ -6,6 +6,7 @@
 "bold.short_bold" = "粗体";
 "bold.short_both" = "常规 + 粗体";
 "bold.short_regular" = "常规";
+"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
 "error.failed_to_inspect_passthm_file" = "无法解析 .passthm 文件";
 "error.failed_to_package_theme_for" = "主题打包失败，无法刷入。";
 "error.no_backup_for_card" = "尚未存储这张卡片的原始图像，无法恢复。";
@@ -43,6 +44,7 @@
 "status.complete_all_cards_updated" = "完成！所有卡片已更新。";
 "status.connected_to" = "已连接到 %@";
 "status.could_not_start_card_scanning" = "无法开始扫描卡片。";
+"status.detection_could_not_run" = "Device detection could not run. See the log.";
 "status.device_tools_are_missing_from" = "此版本缺少设备工具。";
 "status.double_click_side_button_pass" = "连按两下侧边按钮，通过面容 ID 验证，然后轻点你的卡片…";
 "status.failed_to_apply_card_skins" = "卡片皮肤应用失败。";
@@ -147,7 +149,7 @@
 "ui.on_your_iphone_double_click" = "在 iPhone 上**连按两下侧边按钮**（Apple Pay），用**面容 ID** 验证，然后**轻点你的卡片**。";
 "ui.original_saved" = "原始图像已存储";
 "ui.passcode_theme_file" = "密码主题文件";
-"ui.passcode_theme_successfully_applied_n" = "密码主题已应用！\\n\\n锁定 iPhone（或重新启动）即可看到新的密码键盘。";
+"ui.passcode_theme_successfully_applied_n" = "密码主题已应用！\\\\n\\\\n锁定 iPhone（或重新启动）即可看到新的密码键盘。";
 "ui.passcode_themes" = "密码主题：";
 "ui.passthm_standard_cowabunga_nugget" = ".passthm 标准（Cowabunga / Nugget）";
 "ui.paste_one_or_more_card" = "粘贴一个或多个卡片哈希（用空格、逗号或换行分隔）：";
@@ -169,10 +171,11 @@
 "ui.select_all" = "全选";
 "ui.set_skin_for_all" = "统一设置皮肤…";
 "ui.skin_assigned_and_ready" = "皮肤已指定，可以刷入";
-"ui.skins_successfully_applied_to_all" = "所有选中的卡片都已应用新皮肤！\\n\\n请在 iPhone 上强制退出“钱包”App（或重新启动），即可看到新外观。";
+"ui.skins_successfully_applied_to_all" = "所有选中的卡片都已应用新皮肤！\\\\n\\\\n请在 iPhone 上强制退出“钱包”App（或重新启动），即可看到新外观。";
 "ui.slice_circle_desc" = "图像会被裁切成一个个圆形按键图标。";
 "ui.slice_seamless_desc" = "图像横跨整个键盘且不做圆形裁切（Adobe Dog 风格）。";
 "ui.slicing_style" = "切分方式";
+"ui.something_went_wrong" = "Something went wrong";
 "ui.start_scanning" = "开始扫描";
 "ui.stop_scanning" = "停止扫描";
 "ui.success" = "成功！";
