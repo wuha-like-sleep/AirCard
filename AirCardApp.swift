@@ -966,6 +966,13 @@ class AppViewModel: ObservableObject {
     // Looking once at launch left people replugging: the Mac holds a new
     // phone's data connection until someone clicks Allow, the phone asks for
     // Trust only after that, and by then the app had already given up.
+    deinit {
+        deviceWatch?.invalidate()
+        if let observer = activationObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
     func startWatchingForDevice() {
         deviceWatch?.invalidate()
         deviceWatch = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
@@ -2537,7 +2544,7 @@ struct CardFaceDesignerView: View {
 // MARK: - Main UI View
 
 struct ContentView: View {
-    @StateObject private var vm = AppViewModel()
+    @ObservedObject var vm: AppViewModel
     @State private var showCredits = false
     // The log was a fixed 90 pt strip, six or seven lines. Drag its top edge to
     // size it; the height is remembered between launches.
@@ -4464,9 +4471,14 @@ struct ContentView: View {
 
 @main
 struct AirCardApp: App {
+    // One model for the life of the app. Held by each window, as it was, every
+    // Cmd+N opened a second copy with its own device watch and its own flash,
+    // and closing the window mid-flash threw the progress away.
+    @StateObject private var vm = AppViewModel()
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Window("AirCard", id: "main") {
+            ContentView(vm: vm)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)

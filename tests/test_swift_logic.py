@@ -6,6 +6,7 @@ AirCardApp.swift, compiles it next to a small driver, and runs it. The code
 under test is never copied by hand, so these cannot drift from what ships.
 """
 
+import platform
 import re
 import shutil
 import subprocess
@@ -39,8 +40,11 @@ def run_swift(sources: dict, timeout: int = 180) -> str:
             p.write_text(body, encoding="utf-8")
             paths.append(str(p))
         binary = Path(tmp) / "run"
+        # Built for the machine running the tests. A fixed arm64 target compiled
+        # fine on an Intel Mac and then could not be run there.
+        arch = "arm64" if platform.machine() == "arm64" else "x86_64"
         build = subprocess.run(
-            ["swiftc", "-sdk", sdk, "-target", "arm64-apple-macosx14.0", *paths, "-o", str(binary)],
+            ["swiftc", "-sdk", sdk, "-target", f"{arch}-apple-macosx14.0", *paths, "-o", str(binary)],
             capture_output=True, text=True, timeout=timeout,
         )
         if build.returncode != 0:
