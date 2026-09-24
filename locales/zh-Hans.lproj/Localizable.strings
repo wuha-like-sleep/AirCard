@@ -14,9 +14,16 @@
 "designer.menu" = "设计卡面…";
 "designer.reset" = "重置取景";
 "designer.title" = "设计卡片 %d";
+"discard.body" = "丢弃后，AirCard 将无法再恢复这张卡片。只有在存储的图像不是这张卡片本来的设计时，才需要这样做。";
+"discard.confirm" = "丢弃";
+"discard.title" = "要丢弃存储在这台 Mac 上的原始图像吗？";
 "error.backend_unavailable" = "AirCard 无法启动设备工具。重新安装 App 通常可以解决此问题。";
+"error.backup_already_changed" = "AirCard 已经更改过这张卡片，卡片上现在的图像不是原始图像。如需找回原始图像，请将这张卡片从“钱包”中移除，然后重新添加。";
+"error.backup_failed" = "无法读取这张卡片的图像，因此没有存储任何内容。请解锁 iPhone 后重试。";
+"error.backup_incomplete" = "只读取到这张卡片的部分图像，因此没有存储任何内容。请解锁 iPhone 后重试。";
 "error.command_line_tools" = "AirCard 需要 Apple 的命令行工具。请打开“终端”，运行“xcode-select --install”，按提示完成安装后，点按刷新按钮。";
 "error.design_save_failed" = "无法存储此设计。请重试，或换一张图片。";
+"error.discard_failed" = "无法移除已存储的原始图像。";
 "error.failed_to_inspect_passthm_file" = "无法解析 .passthm 文件";
 "error.failed_to_package_theme_for" = "主题打包失败，无法刷入。";
 "error.no_backup_for_card" = "尚未存储这张卡片的原始图像，无法恢复。";
@@ -26,6 +33,7 @@
 "error.please_assign_a_skin_image" = "请至少为一张选中的卡片指定皮肤图片。";
 "error.please_configure_at_least_one" = "导出前请至少设置一个按键。";
 "error.please_connect_and_trust_your" = "请先连接 iPhone 并信任此电脑。";
+"error.restore_failed" = "未能完整恢复这张卡片。请解锁 iPhone 后重试。";
 "error.theme_export_failed" = "主题导出失败：%@";
 "error.xcode_licence" = "同意 Xcode 许可协议之前，macOS 不会让 AirCard 使用所需的工具。请打开“终端”，运行“sudo xcodebuild -license accept”，然后点按刷新按钮。";
 "lang.all" = "所有语言（通用）";
@@ -45,6 +53,7 @@
 "panel.save_theme_title" = "存储密码主题";
 "status.adopted_poster_slices_to_individual" = "已将海报切片用作各个按键";
 "status.backing_up" = "正在存储原始图像…";
+"status.backup_discarded" = "已移除存储的原始图像";
 "status.backup_failed" = "原始图像存储失败。";
 "status.backup_saved" = "已存储原始图像";
 "status.card_scanning_ended_check_the" = "卡片扫描已结束。请查看日志，重新连接 iPhone 后再试。";
@@ -64,7 +73,7 @@
 "status.iphone_needs_trust" = "iPhone 已连接，但还没有信任这台 Mac。请解锁 iPhone，轻点“信任”，然后点按刷新按钮。";
 "status.loaded_into_creator" = "已将“%1$@”载入主题创作（%2$d 个按键可编辑）";
 "status.loaded_theme" = "已载入密码主题“%1$@”（%2$d 个素材）";
-"status.no_iphone_found_please_connect" = "未找到 iPhone。请通过 USB 连接。";
+"status.no_iphone_allow_accessory" = "未找到 iPhone。请使用可传输数据的连接线，而不是仅能充电的线。如果 Mac 询问是否允许配件连接，请点按“允许”。";
 "status.passcode_sent" = "已发送到你的 iPhone。锁定 iPhone 即可看到新的密码键盘。";
 "status.poster_image_loaded_ready_to" = "海报图片已载入 · 可以取景并切分";
 "status.preparing_skin" = "[%1$d/%2$d] 正在准备 %3$@ 的皮肤…";
@@ -118,6 +127,7 @@
 "ui.close" = "关闭";
 "ui.copied" = "已拷贝！";
 "ui.copy_full_hash" = "拷贝完整哈希";
+"ui.copy_log" = "全部拷贝";
 "ui.core_exploit" = "核心漏洞：";
 "ui.creator_status" = "主题创作 · 已设置 %1$d/10 个按键 · 目标：%2$@";
 "ui.credits" = "鸣谢";
@@ -127,6 +137,7 @@
 "ui.developer" = "开发者：";
 "ui.device_subtitle" = "%1$@ · iOS %2$@";
 "ui.device_with_link" = "%1$@（%2$@）";
+"ui.discard_original" = "丢弃 Mac 上存储的原始图像…";
 "ui.done" = "完成";
 "ui.double_click_side_button_apple" = "连按两下侧边按钮（Apple Pay），通过面容 ID 验证，然后轻点你的卡片。";
 "ui.drag_anywhere_on_the_dialer" = "在键盘预览上任意拖移即可调整位置";
@@ -157,6 +168,7 @@
 "ui.live_scanner_active" = "扫描进行中";
 "ui.lock_screen_keypad_preview" = "锁定屏幕键盘预览";
 "ui.log" = "日志";
+"ui.log_resize_help" = "拖移可调整日志大小";
 "ui.no_cards_detected_yet" = "尚未检测到卡片";
 "ui.no_iphone_usb" = "未连接 iPhone（USB）";
 "ui.no_passthm_loaded_select_a" = "未载入 .passthm · 请选择要刷入的主题包";

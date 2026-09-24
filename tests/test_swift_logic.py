@@ -170,5 +170,41 @@ class BackendStartupTests(unittest.TestCase):
         self.assertEqual(out.strip(), "ok")
 
 
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "needs swiftc on macOS")
+class DeviceWatchTests(unittest.TestCase):
+    """When the app looks for a phone on its own, and when it must not."""
+
+    def test_the_timer_never_re_asks_a_phone_waiting_on_trust(self):
+        rule = lift(r"(    nonisolated static func shouldLookForDevice\(.*?\n    \})\n")
+        driver = textwrap.dedent('''
+            import Foundation
+            func look(_ t: Bool, _ dev: Bool, _ busy: Bool, _ st: String, _ act: Bool) -> Bool {
+                AppViewModel.shouldLookForDevice(fromTimer: t, hasDevice: dev, busy: busy, lastState: st, appActive: act)
+            }
+            let cases: [(String, Bool, Bool)] = [
+                // Nothing plugged in yet: keep looking, it cannot raise a prompt.
+                ("timer, nothing seen, app in front", look(true, false, false, "none", true), true),
+                // Phone waiting on Trust: listing it asks to pair again.
+                ("timer, waiting on Trust", look(true, false, false, "untrusted", true), false),
+                // Coming back to the app is the person's own move, so look once.
+                ("back to app, waiting on Trust", look(false, false, false, "untrusted", true), true),
+                ("timer, app in background", look(true, false, false, "none", false), false),
+                ("already connected", look(true, true, false, "connected", true), false),
+                ("mid flash", look(true, false, true, "none", true), false),
+                ("back to app, mid flash", look(false, false, true, "none", true), false),
+            ]
+            var failures: [String] = []
+            for (name, got, want) in cases where got != want {
+                failures.append("\\(name): got \\(got), want \\(want)")
+            }
+            if failures.isEmpty { print("ok") } else { print(failures.joined(separator: "\\n")); exit(1) }
+        ''')
+        out = run_swift({
+            "rule.swift": "import Foundation\n\nenum AppViewModel {\n" + rule.replace("nonisolated ", "") + "\n}\n",
+            "main.swift": driver,
+        })
+        self.assertEqual(out.strip(), "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

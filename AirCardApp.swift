@@ -50,6 +50,10 @@ struct CardItem: Identifiable, Hashable {
     var isSelected: Bool = true
     var customImageURL: URL? = nil
     var customImage: NSImage? = nil
+    // The editable design behind customImage, when it came from the designer.
+    // Without it, reopening the designer started from the flattened render, so
+    // the picture could not be re-framed and zooming out showed its old edges.
+    var design: CardFaceDesign? = nil
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
@@ -578,9 +582,20 @@ class AppViewModel: ObservableObject {
     @Published var designingCardID: String?
     // A phone is plugged in but has not trusted this Mac yet.
     @Published var awaitingTrust = false
+    // Keeps looking for a phone while none is connected, so nobody has to
+    // unplug and replug, or find the refresh button, after answering a prompt.
+    private var deviceWatch: Timer?
+    private var activationObserver: NSObjectProtocol?
+    // What the last check concluded. Messages, logs and alerts fire only when
+    // this changes, or a broken backend would raise an alert every few seconds.
+    private var lastDeviceState = ""
     // True once a flash has gone quiet long enough that the user deserves to be
     // told, rather than left looking at a bar that is not moving.
     @Published var flashStalled = false
+    // True only while a card flash process is running. Backup, restore and the
+    // passcode flash share isFlashing but cannot be cancelled, so a Cancel
+    // button shown for them would do nothing.
+    @Published var canCancelFlash = false
     private var activeFlashProcess: Process?
     private var lastFlashActivity = Date()
     private var flashCancelled = false
@@ -624,6 +639,7 @@ class AppViewModel: ObservableObject {
         
         loadSavedCards()
         checkDevice()
+        startWatchingForDevice()
     }
     
     func log(_ message: String) {
@@ -900,6 +916,7 @@ class AppViewModel: ObservableObject {
         if let idx = cards.firstIndex(where: { $0.id == cardId }) {
             cards[idx].customImageURL = url
             cards[idx].customImage = NSImage(contentsOf: url)
+            cards[idx].design = nil
             cards[idx].isSelected = true
             log("Assigned custom skin to card: \(cardId.prefix(12))...")
         }
@@ -916,10 +933,11 @@ class AppViewModel: ObservableObject {
 
     // The designer hands back a finished card face. Write it out the same way a
     // dropped image is, so the flash path treats it like any other skin.
-    func applyCardDesign(_ image: NSImage, for cardId: String) {
+    func applyCardDesign(_ design: CardFaceDesign, for cardId: String) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aircard_design_\(UUID().uuidString).png")
-        guard let tiff = image.tiffRepresentation,
+        guard let image = design.render(),
+              let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]),
               (try? png.write(to: url)) != nil else {
@@ -927,6 +945,10 @@ class AppViewModel: ObservableObject {
             return
         }
         setCardImage(for: cardId, url: url)
+        // After setCardImage, which clears it for ordinary image drops.
+        if let idx = cards.firstIndex(where: { $0.id == cardId }) {
+            cards[idx].design = design
+        }
         log("Designed a card face for: \(cardId.prefix(12))...")
     }
 
@@ -934,15 +956,58 @@ class AppViewModel: ObservableObject {
         if let idx = cards.firstIndex(where: { $0.id == cardId }) {
             cards[idx].customImageURL = nil
             cards[idx].customImage = nil
+            cards[idx].design = nil
             log("Cleared custom skin for: \(cardId.prefix(12))...")
         }
     }
     
     // MARK: - Device Connection
     
-    func checkDevice() {
+    // Looking once at launch left people replugging: the Mac holds a new
+    // phone's data connection until someone clicks Allow, the phone asks for
+    // Trust only after that, and by then the app had already given up.
+    func startWatchingForDevice() {
+        deviceWatch?.invalidate()
+        deviceWatch = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkDeviceIfWaiting(fromTimer: true) }
+        }
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            // Coming back from a Trust or Allow prompt is the moment it changed.
+            Task { @MainActor in self?.checkDeviceIfWaiting(fromTimer: false) }
+        }
+    }
+
+    private func checkDeviceIfWaiting(fromTimer: Bool) {
+        guard AppViewModel.shouldLookForDevice(
+            fromTimer: fromTimer,
+            hasDevice: device != nil,
+            busy: isCheckingDevice || isFlashing || isScanningCards,
+            lastState: lastDeviceState,
+            appActive: NSApp.isActive
+        ) else { return }
+        checkDevice(quiet: true)
+    }
+
+    // Listing a phone that has not paired asks it to pair, which puts the Trust
+    // prompt up again. On a timer that would re-ask every few seconds after
+    // someone tapped Don't Trust, so once a phone is waiting on Trust it is only
+    // looked at again when the person comes back to the app.
+    nonisolated static func shouldLookForDevice(fromTimer: Bool, hasDevice: Bool, busy: Bool,
+                                                lastState: String, appActive: Bool) -> Bool {
+        if hasDevice || busy { return false }
+        if fromTimer && (lastState == "untrusted" || !appActive) { return false }
+        return true
+    }
+
+    func checkDevice(quiet: Bool = false) {
         isCheckingDevice = true
-        statusText = L("status.checking_connected_devices", "Checking connected devices...")
+        if !quiet {
+            statusText = L("status.checking_connected_devices", "Checking connected devices...")
+            // A deliberate refresh should report again even if nothing changed.
+            lastDeviceState = ""
+        }
         let scriptDir = self.scriptDir
 
         Task.detached {
@@ -960,6 +1025,17 @@ class AppViewModel: ObservableObject {
                     self.device = nil
                     self.backedUpCards = []
                     self.isCheckingDevice = false
+                    let state: String
+                    if response == nil { state = "backend:\(failure)" }
+                    else if (response?.untrusted ?? 0) > 0 { state = "untrusted" }
+                    else if response?.error == "device_helper_missing" { state = "helper-missing" }
+                    else { state = "none" }
+                    self.awaitingTrust = (state == "untrusted")
+                    // The watch repeats this every few seconds. Say something only
+                    // when the answer changes, or one broken backend becomes an
+                    // alert every four seconds.
+                    guard state != self.lastDeviceState else { return }
+                    self.lastDeviceState = state
                     if response == nil {
                         // Nothing parseable came back, so the backend did not run.
                         // Saying "no iPhone" sends people to replug a phone that
@@ -974,20 +1050,24 @@ class AppViewModel: ObservableObject {
                             self.errorMessage = L("error.backend_unavailable", "AirCard could not start its device tools. Reinstalling the app usually fixes this.")
                         }
                         self.log("Device detection returned nothing usable. \(errorTail.isEmpty ? "(no error output)" : errorTail)")
-                    } else if (response?.untrusted ?? 0) > 0 {
-                        // The phone is right there, asking. Pointing at the cable
-                        // would send people the wrong way.
-                        self.awaitingTrust = true
+                    } else if state == "untrusted" {
+                        // Seen at all means the Mac already let the data through,
+                        // so the Trust prompt is on the phone now.
                         self.statusText = L("status.iphone_needs_trust", "Your iPhone is connected but has not trusted this Mac yet. Unlock it, tap Trust, then click refresh.")
                         self.log("An iPhone is attached but has not trusted this Mac yet.")
                     } else if response?.error == "device_helper_missing" {
                         self.statusText = L("status.device_tools_are_missing_from", "Device tools are missing from this build.")
                         self.log("Bundled device_helper not found — detection cannot run.")
                     } else {
-                        self.statusText = L("status.no_iphone_found_please_connect", "No iPhone found. Please connect via USB.")
+                        // Not seen at all. On a Mac that asks before letting a new
+                        // accessory's data through, the phone cannot show Trust
+                        // until someone clicks Allow on the Mac, and nothing on
+                        // the phone says so.
+                        self.statusText = L("status.no_iphone_allow_accessory", "No iPhone found. Use a cable that carries data, not a charge-only one. If your Mac asks whether to allow the accessory to connect, click Allow.")
                     }
                     return
                 }
+                self.lastDeviceState = "connected"
 
                 // Stay on the current device if it is still attached, otherwise take
                 // the top of the list (cabled iPhone leads).
@@ -1040,7 +1120,7 @@ class AppViewModel: ObservableObject {
                     self.device = nil
                     self.backedUpCards = []
                     if isInitial {
-                        self.statusText = L("status.no_iphone_found_please_connect", "No iPhone found. Please connect via USB.")
+                        self.statusText = L("status.no_iphone_allow_accessory", "No iPhone found. Use a cable that carries data, not a charge-only one. If your Mac asks whether to allow the accessory to connect, click Allow.")
                     } else {
                         self.statusText = L("status.selected_iphone_is_no_longer", "Selected iPhone is no longer connected.")
                         self.log("Selected device is no longer available. Reconnect it and refresh.")
@@ -1064,7 +1144,20 @@ class AppViewModel: ObservableObject {
             let data = AppViewModel.runBackend(["aircard_backend.py", "--backups", udid], scriptDir: scriptDir)
             let list = data.flatMap { try? JSONDecoder().decode(SavedCardsResponse.self, from: $0) }
             await MainActor.run {
-                self.backedUpCards = Set(list?.cards ?? [])
+                let saved = list?.cards ?? []
+                self.backedUpCards = Set(saved)
+                // A card can only be restored from its row. If it was removed from
+                // the list, or the list was cleared, its saved original would sit
+                // on disk with no way to reach it, so put the row back.
+                var added = 0
+                for id in saved where !self.cards.contains(where: { $0.id == id }) {
+                    self.cards.append(CardItem(id: id, isSelected: false))
+                    added += 1
+                }
+                if added > 0 {
+                    self.saveCards()
+                    self.log("Put \(added) card(s) back in the list because they have a saved original.")
+                }
             }
         }
     }
@@ -1072,6 +1165,27 @@ class AppViewModel: ObservableObject {
     // Reading artwork back off the phone moves it and writes it out again, so
     // this is something the user asks for rather than something a flash does
     // quietly on their behalf.
+    // The backend's own message is English and written for the log. What the
+    // person reads comes from the result code, in their language.
+    static func originalArtworkMessage(code: String) -> String? {
+        switch code {
+        case "backup.incomplete":
+            return L("error.backup_incomplete", "Only part of this card's artwork could be read, so nothing was saved. Try again with the iPhone unlocked.")
+        case "backup.failed":
+            return L("error.backup_failed", "The card's artwork could not be read, so nothing was saved. Try again with the iPhone unlocked.")
+        case "backup.already_changed":
+            return L("error.backup_already_changed", "AirCard has already changed this card, so what is on it now is not the original. To get the original back, remove the card from Wallet and add it again.")
+        case "restore.no_backup":
+            return L("error.no_backup_for_card", "There is no saved original for this card, so it cannot be restored.")
+        case "restore.failed":
+            return L("error.restore_failed", "The card could not be fully restored. Try again with the iPhone unlocked.")
+        case "backup.discard_failed":
+            return L("error.discard_failed", "The saved original could not be removed.")
+        default:
+            return nil
+        }
+    }
+
     func backupCard(id: String) {
         guard let udid = device?.udid, !isFlashing else { return }
         // Clear last time's error, or it outlives the run that caused it.
@@ -1093,9 +1207,39 @@ class AppViewModel: ObservableObject {
                     if (json["type"] as? String) == "success" {
                         self.statusText = L("status.backup_saved", "Original artwork saved")
                     } else if (json["type"] as? String) == "error" {
-                        self.errorMessage = msg
+                        let code = json["code"] as? String ?? ""
+                        self.errorMessage = AppViewModel.originalArtworkMessage(code: code)
+                            ?? L("error.backup_failed", "The card's artwork could not be read, so nothing was saved. Try again with the iPhone unlocked.")
                         self.statusText = L("status.backup_failed", "Could not save the original artwork")
                     }
+                }
+                self.loadBackups()
+            }
+        }
+    }
+
+    // Throwing away a saved original cannot be undone, so it asks first. It is
+    // here for the case where what got saved was not the original after all.
+    func discardBackup(id: String) {
+        guard let udid = device?.udid, !isFlashing, backedUpCards.contains(id) else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L("discard.title", "Discard the saved original?")
+        alert.informativeText = L("discard.body", "AirCard will no longer be able to restore this card. Only do this if what was saved is not the card's real design.")
+        alert.addButton(withTitle: L("discard.confirm", "Discard"))
+        alert.addButton(withTitle: L("ui.cancel", "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        errorMessage = nil
+        let scriptDir = self.scriptDir
+        Task.detached {
+            let data = AppViewModel.runBackend(["aircard_backend.py", "--discard-backup", udid, id], scriptDir: scriptDir)
+            let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            await MainActor.run {
+                if text.contains("\"backup.discarded\"") {
+                    self.statusText = L("status.backup_discarded", "Saved original removed")
+                    self.log("Discarded the saved original for \(id.prefix(12))...")
+                } else {
+                    self.errorMessage = AppViewModel.originalArtworkMessage(code: "backup.discard_failed")
                 }
                 self.loadBackups()
             }
@@ -1125,7 +1269,11 @@ class AppViewModel: ObservableObject {
                           let msg = json["message"] as? String else { continue }
                     self.log("  \(msg)")
                     if (json["type"] as? String) == "success" { restored = true }
-                    if (json["type"] as? String) == "error" { self.errorMessage = msg }
+                    if (json["type"] as? String) == "error" {
+                        let code = json["code"] as? String ?? ""
+                        self.errorMessage = AppViewModel.originalArtworkMessage(code: code)
+                            ?? L("error.restore_failed", "The card could not be fully restored. Try again with the iPhone unlocked.")
+                    }
                 }
                 if restored {
                     self.statusText = L("status.restored", "Card restored. Force-close Wallet to see it.")
@@ -1474,6 +1622,7 @@ class AppViewModel: ObservableObject {
                 
                 await MainActor.run {
                     self.activeFlashProcess = flashProcess
+                    self.canCancelFlash = true
                     self.lastFlashActivity = Date()
                 }
                 // The read below blocks while the helper is silent, so the stall
@@ -1508,7 +1657,10 @@ class AppViewModel: ObservableObject {
                 flashProcess.waitUntilExit()
                 errPipe.fileHandleForReading.readabilityHandler = nil
                 watchdog.cancel()
-                await MainActor.run { self.activeFlashProcess = nil }
+                await MainActor.run {
+                    self.activeFlashProcess = nil
+                    self.canCancelFlash = false
+                }
 
                 if flashProcess.terminationStatus != 0 {
                     flashFailed = true
@@ -1874,6 +2026,7 @@ struct WalletCardView: View {
     let onDesign: () -> Void
     let onBackup: () -> Void
     let onRestore: () -> Void
+    let onDiscardBackup: () -> Void
     let onDelete: () -> Void
     
     @State private var isHovered = false
@@ -2006,6 +2159,7 @@ struct WalletCardView: View {
                         if let url = fileURL, let img = NSImage(contentsOf: url) {
                             Task { @MainActor in
                                 card.customImageURL = url
+                                card.design = nil
                                 card.customImage = img
                                 card.isSelected = true
                             }
@@ -2017,6 +2171,7 @@ struct WalletCardView: View {
                         if let url = item as? URL, let img = NSImage(contentsOf: url) {
                             Task { @MainActor in
                                 card.customImageURL = url
+                                card.design = nil
                                 card.customImage = img
                                 card.isSelected = true
                             }
@@ -2030,6 +2185,7 @@ struct WalletCardView: View {
                             }
                             Task { @MainActor in
                                 card.customImageURL = tempURL
+                                card.design = nil
                                 card.customImage = img
                                 card.isSelected = true
                             }
@@ -2105,6 +2261,11 @@ struct WalletCardView: View {
                     .disabled(!hasBackup || busy)
 
                     if hasBackup {
+                        Button(role: .destructive, action: onDiscardBackup) {
+                            Label(L("ui.discard_original", "Discard Saved Original..."),
+                                  systemImage: "trash")
+                        }
+                        .disabled(busy)
                         Divider()
                         Text(L("ui.original_saved", "Original artwork is saved"))
                     }
@@ -2207,19 +2368,22 @@ struct CardFaceDesign {
 
 struct CardFaceDesignerView: View {
     let cardNumber: Int
-    let onApply: (NSImage) -> Void
+    let onApply: (CardFaceDesign) -> Void
     let onCancel: () -> Void
 
     @State private var design: CardFaceDesign?
     @State private var dragStart: CGSize = .zero
     @State private var isTargeted = false
 
-    init(cardNumber: Int, initialImage: NSImage?,
-         onApply: @escaping (NSImage) -> Void, onCancel: @escaping () -> Void) {
+    init(cardNumber: Int, initialDesign: CardFaceDesign?, fallbackImage: NSImage?,
+         onApply: @escaping (CardFaceDesign) -> Void, onCancel: @escaping () -> Void) {
         self.cardNumber = cardNumber
         self.onApply = onApply
         self.onCancel = onCancel
-        _design = State(initialValue: initialImage.map { CardFaceDesign(source: $0) })
+        let start = initialDesign ?? fallbackImage.map { CardFaceDesign(source: $0) }
+        _design = State(initialValue: start)
+        // Otherwise the first drag on a reopened design jumps back to centre.
+        _dragStart = State(initialValue: start?.offset ?? .zero)
     }
 
     var body: some View {
@@ -2266,7 +2430,7 @@ struct CardFaceDesignerView: View {
                 }
                 .disabled(design == nil)
                 Button(L("designer.apply", "Use This Design")) {
-                    if let image = design?.render() { onApply(image) }
+                    if let d = design { onApply(d) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(design == nil)
@@ -2375,6 +2539,10 @@ struct CardFaceDesignerView: View {
 struct ContentView: View {
     @StateObject private var vm = AppViewModel()
     @State private var showCredits = false
+    // The log was a fixed 90 pt strip, six or seven lines. Drag its top edge to
+    // size it; the height is remembered between launches.
+    @AppStorage("activityLogHeight") private var logHeight: Double = 180
+    @State private var logDragStart: Double?
     @State private var dragOffsetStart: CGPoint = .zero
     @State private var dragKeyStartOffsets: [String: CGPoint] = [:]
     @State private var isTargetedPoster = false
@@ -2437,6 +2605,7 @@ struct ContentView: View {
                                     onDesign: { vm.designingCardID = vm.cards[idx].id },
                                     onBackup: { vm.backupCard(id: vm.cards[idx].id) },
                                     onRestore: { vm.restoreCard(id: vm.cards[idx].id) },
+                                    onDiscardBackup: { vm.discardBackup(id: vm.cards[idx].id) },
                                     onDelete: { vm.deleteCard(id: vm.cards[idx].id) }
                                 )
                             }
@@ -2473,9 +2642,10 @@ struct ContentView: View {
                let index = vm.cards.firstIndex(where: { $0.id == id }) {
                 CardFaceDesignerView(
                     cardNumber: index + 1,
-                    initialImage: vm.cards[index].customImage,
-                    onApply: { image in
-                        vm.applyCardDesign(image, for: id)
+                    initialDesign: vm.cards[index].design,
+                    fallbackImage: vm.cards[index].customImage,
+                    onApply: { design in
+                        vm.applyCardDesign(design, for: id)
                         vm.designingCardID = nil
                     },
                     onCancel: { vm.designingCardID = nil }
@@ -3791,28 +3961,59 @@ struct ContentView: View {
     
     private var activityLogView: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Grab strip along the top edge. Dragging up makes the log taller.
+            Rectangle()
+                .fill(Color.secondary.opacity(0.25))
+                .frame(width: 36, height: 4)
+                .clipShape(Capsule())
+                .frame(maxWidth: .infinity)
+                .frame(height: 10)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+                }
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            let start = logDragStart ?? logHeight
+                            if logDragStart == nil { logDragStart = start }
+                            logHeight = min(max(start - value.translation.height, 80), 520)
+                        }
+                        .onEnded { _ in logDragStart = nil }
+                )
+                .help(L("ui.log_resize_help", "Drag to resize the log"))
+
             HStack {
                 Text(L("ui.activity_log", "Activity Log"))
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
                 Spacer()
+                // The log stays in English so it can be pasted into an issue;
+                // that only helps if it can be copied out in one go.
+                Button(L("ui.copy_log", "Copy All")) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(vm.logs.joined(separator: "\n"), forType: .string)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .disabled(vm.logs.isEmpty)
                 Button(L("ui.clear", "Clear")) {
                     vm.logs.removeAll()
                 }
                 .buttonStyle(.link)
-                .font(.caption2)
+                .font(.caption)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 6)
-            
+
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(Array(vm.logs.enumerated()), id: \.offset) { idx, log in
                             Text(log)
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.secondary)
+                                .textSelection(.enabled)
                                 .id(idx)
                         }
                     }
@@ -3820,7 +4021,7 @@ struct ContentView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 4)
                 }
-                .frame(height: 90)
+                .frame(height: logHeight)
                 .onChange(of: vm.logs.count) { _, _ in
                     if let last = vm.logs.indices.last {
                         proxy.scrollTo(last, anchor: .bottom)
@@ -3969,7 +4170,7 @@ struct ContentView: View {
 
                     // A way out, which people did not have: they waited at 10% or
                     // 25% and then quit the app to escape.
-                    if vm.isFlashing {
+                    if vm.isFlashing && vm.canCancelFlash {
                         Button(L("ui.cancel", "Cancel")) { vm.cancelFlash() }
                             .buttonStyle(.bordered)
                             .tint(vm.flashStalled ? .orange : nil)

@@ -14,9 +14,16 @@
 "designer.menu" = "카드 앞면 디자인...";
 "designer.reset" = "구도 재설정";
 "designer.title" = "%d번 카드 디자인";
+"discard.body" = "폐기하면 AirCard에서 더 이상 이 카드를 복원할 수 없습니다. 저장된 내용이 카드의 실제 디자인이 아닌 경우에만 폐기하십시오.";
+"discard.confirm" = "폐기";
+"discard.title" = "Mac에 저장된 원본을 폐기하겠습니까?";
 "error.backend_unavailable" = "AirCard에서 기기 도구를 시작하지 못했습니다. 앱을 다시 설치하면 대부분 해결됩니다.";
+"error.backup_already_changed" = "AirCard에서 이미 이 카드의 디자인을 변경했기 때문에 지금 카드에 있는 디자인은 원본이 아닙니다. 원본을 되찾으려면 지갑 앱에서 카드를 제거한 다음 다시 추가하십시오.";
+"error.backup_failed" = "카드 아트워크를 읽지 못해서 아무것도 저장하지 않았습니다. iPhone의 잠금을 해제한 상태에서 다시 시도하십시오.";
+"error.backup_incomplete" = "이 카드의 아트워크를 일부만 읽을 수 있어서 아무것도 저장하지 않았습니다. iPhone의 잠금을 해제한 상태에서 다시 시도하십시오.";
 "error.command_line_tools" = "AirCard를 사용하려면 Apple의 명령어 라인 개발자 도구가 필요합니다. 터미널을 열고 \"xcode-select --install\" 명령을 실행한 후 설치 안내에 따라 설치를 마친 다음 새로 고침을 클릭하십시오.";
 "error.design_save_failed" = "디자인을 저장하지 못했습니다. 다시 시도하거나 다른 이미지를 선택하십시오.";
+"error.discard_failed" = "저장된 원본을 제거하지 못했습니다.";
 "error.failed_to_inspect_passthm_file" = ".passthm 파일을 확인하지 못했습니다";
 "error.failed_to_package_theme_for" = "적용할 테마를 준비하지 못했습니다.";
 "error.no_backup_for_card" = "이 카드는 저장된 원본이 없어 복원할 수 없습니다.";
@@ -26,6 +33,7 @@
 "error.please_assign_a_skin_image" = "선택한 카드 중 하나 이상에 스킨 이미지를 지정하십시오.";
 "error.please_configure_at_least_one" = "내보내기 전에 키를 하나 이상 설정하십시오.";
 "error.please_connect_and_trust_your" = "먼저 iPhone을 연결하고 이 컴퓨터를 신뢰하십시오.";
+"error.restore_failed" = "카드를 완전히 복원하지 못했습니다. iPhone의 잠금을 해제한 상태에서 다시 시도하십시오.";
 "error.theme_export_failed" = "테마를 내보내지 못했습니다: %@";
 "error.xcode_licence" = "Xcode 사용권 계약에 동의해야 macOS에서 AirCard에 필요한 도구를 사용할 수 있습니다. 터미널을 열고 \"sudo xcodebuild -license accept\" 명령을 실행한 다음 새로 고침을 클릭하십시오.";
 "lang.all" = "모든 언어 (통합)";
@@ -45,6 +53,7 @@
 "panel.save_theme_title" = "암호 테마 저장";
 "status.adopted_poster_slices_to_individual" = "포스터 조각을 개별 키로 가져왔습니다";
 "status.backing_up" = "원본 아트워크 저장 중...";
+"status.backup_discarded" = "저장된 원본을 제거했습니다";
 "status.backup_failed" = "원본 아트워크를 저장하지 못했습니다";
 "status.backup_saved" = "원본 아트워크를 저장했습니다";
 "status.card_scanning_ended_check_the" = "카드 스캔이 종료되었습니다. 로그를 확인하고 iPhone을 다시 연결하십시오.";
@@ -64,7 +73,7 @@
 "status.iphone_needs_trust" = "iPhone이 연결되었지만 아직 이 Mac을 신뢰하지 않았습니다. iPhone의 잠금을 해제하고 신뢰를 탭한 다음 새로 고침을 클릭하십시오.";
 "status.loaded_into_creator" = "테마 만들기에 '%1$@' 불러옴 (편집 가능한 키 %2$d개)";
 "status.loaded_theme" = "암호 테마 '%1$@' 불러옴 (이미지 %2$d개)";
-"status.no_iphone_found_please_connect" = "iPhone을 찾을 수 없습니다. USB로 연결하십시오.";
+"status.no_iphone_allow_accessory" = "iPhone을 찾을 수 없습니다. 충전 전용 케이블이 아닌 데이터 전송이 가능한 케이블을 사용하십시오. Mac에서 액세서리 연결을 허용할지 묻는 메시지가 표시되면 허용을 클릭하십시오.";
 "status.passcode_sent" = "iPhone으로 전송했습니다. iPhone을 잠갔다 켠 후 새 키패드를 확인하십시오.";
 "status.poster_image_loaded_ready_to" = "포스터 이미지 불러옴 · 구도 조정 및 분할 준비 완료";
 "status.preparing_skin" = "[%1$d/%2$d] %3$@ 스킨 준비 중...";
@@ -118,6 +127,7 @@
 "ui.close" = "닫기";
 "ui.copied" = "복사됨!";
 "ui.copy_full_hash" = "전체 해시 복사";
+"ui.copy_log" = "모두 복사";
 "ui.core_exploit" = "핵심 익스플로잇:";
 "ui.creator_status" = "테마 만들기 · 키 10개 중 %1$d개 설정됨 · 대상: %2$@";
 "ui.credits" = "크레딧";
@@ -127,6 +137,7 @@
 "ui.developer" = "개발자:";
 "ui.device_subtitle" = "%1$@ · iOS %2$@";
 "ui.device_with_link" = "%1$@ (%2$@)";
+"ui.discard_original" = "저장된 원본 폐기...";
 "ui.done" = "완료";
 "ui.double_click_side_button_apple" = "측면 버튼을 두 번 누르고(Apple Pay) Face ID로 인증한 다음 카드를 탭하십시오.";
 "ui.drag_anywhere_on_the_dialer" = "키패드 미리보기에서 드래그하여 위치 조정";
@@ -157,6 +168,7 @@
 "ui.live_scanner_active" = "실시간 스캐너 작동 중";
 "ui.lock_screen_keypad_preview" = "잠금 화면 키패드 미리보기";
 "ui.log" = "로그";
+"ui.log_resize_help" = "드래그하여 로그 크기 조절";
 "ui.no_cards_detected_yet" = "아직 감지된 카드 없음";
 "ui.no_iphone_usb" = "iPhone 없음 (USB)";
 "ui.no_passthm_loaded_select_a" = ".passthm 없음 · 적용할 테마 패키지를 선택하십시오";

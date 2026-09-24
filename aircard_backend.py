@@ -58,7 +58,10 @@ from aircard import (
     has_card_backup,
     list_backed_up_cards,
     BACKED_UP_ASSETS,
+    card_was_flashed,
+    discard_card_backup,
     list_connected_devices,
+    mark_card_flashed,
     load_saved_cards,
     survey_devices,
     read_card_backup,
@@ -113,6 +116,17 @@ def cmd_backup(udid: str, card_hash: str) -> bool:
         sys.stdout.flush()
         return True
 
+    # AirCard has already written to this card and nothing was saved before it
+    # did, so what is on the card now is a skin. Saving it would make restore
+    # put the skin back, and the one-save rule would then keep it that way.
+    if card_was_flashed(udid, card_hash):
+        print(json.dumps({
+            "type": "error", "card": card_hash, "code": "backup.already_changed",
+            "message": f"AirCard has already changed {card_hash[:12]}..., so its original is no longer on the phone."
+        }))
+        sys.stdout.flush()
+        return False
+
     pkpass_dir = f"/var/mobile/Library/Passes/Cards/{card_hash}.pkpass"
     originals = []
     for asset in BACKED_UP_ASSETS:
@@ -124,8 +138,12 @@ def cmd_backup(udid: str, card_hash: str) -> bool:
             originals.append((asset, data))
 
     if not save_card_backup(udid, card_hash, originals):
+        # Some but not all of the files came back: say so, and keep nothing,
+        # rather than store a backup that would restore the card only partly.
+        partial = 0 < len(originals) < len(BACKED_UP_ASSETS)
         print(json.dumps({
-            "type": "error", "card": card_hash, "code": "backup.failed",
+            "type": "error", "card": card_hash,
+            "code": "backup.incomplete" if partial else "backup.failed",
             "message": f"Could not read the original artwork for {card_hash[:12]}..."
         }))
         sys.stdout.flush()
@@ -210,6 +228,18 @@ def cmd_restore(udid: str, card_hash: str) -> bool:
     return True
 
 
+def cmd_discard_backup(udid: str, card_hash: str) -> bool:
+    """Deletes a saved original, so a wrong one can be replaced."""
+    ok = discard_card_backup(udid, card_hash)
+    print(json.dumps({
+        "type": "success" if ok else "error", "card": card_hash,
+        "code": "backup.discarded" if ok else "backup.discard_failed",
+        "message": "Saved original removed." if ok else "Could not remove the saved original."
+    }))
+    sys.stdout.flush()
+    return ok
+
+
 def cmd_backups(udid: str):
     """Which cards on this device still have their original artwork saved."""
     print(json.dumps({"ok": True, "cards": list_backed_up_cards(udid)}))
@@ -285,6 +315,9 @@ def cmd_flash(udid: str, card_hash: str, image_path: str) -> bool:
         return False
 
     pkpass_dir = f"/var/mobile/Library/Passes/Cards/{card_hash}.pkpass"
+    # Marked before the write rather than after it succeeds: a write that fails
+    # part way can still have changed the card.
+    mark_card_flashed(udid, card_hash)
     
     total_steps = 4
     step = 0
@@ -731,6 +764,9 @@ def main():
         cmd_backups(sys.argv[2])
     elif norm_cmd == "backup" and len(sys.argv) > 3:
         if not cmd_backup(sys.argv[2], sys.argv[3]):
+            sys.exit(1)
+    elif norm_cmd == "discard-backup" and len(sys.argv) > 3:
+        if not cmd_discard_backup(sys.argv[2], sys.argv[3]):
             sys.exit(1)
     elif norm_cmd == "restore" and len(sys.argv) > 3:
         if not cmd_restore(sys.argv[2], sys.argv[3]):

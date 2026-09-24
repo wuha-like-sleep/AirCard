@@ -99,33 +99,78 @@ def card_backup_dir(udid: str, card_hash: str) -> Path:
     return BACKUPS_ROOT / _backup_slug(udid) / _backup_slug(card_hash)
 
 
-def has_card_backup(udid: str, card_hash: str) -> bool:
-    """True only when the original artwork is actually sitting on disk.
+def has_card_backup(udid: str, card_hash: str, required=None) -> bool:
+    """True only when every file a restore needs is sitting on disk.
 
-    The app asks this before offering to restore, so a card whose backup never
-    got taken is never offered a restore it cannot deliver.
+    A backup missing one of them would restore the card only partly while
+    reporting success, and would also block a proper backup being taken, so it
+    does not count.
     """
+    names = BACKED_UP_ASSETS if required is None else required
     d = card_backup_dir(udid, card_hash)
-    return d.is_dir() and any(f.is_file() and f.stat().st_size > 0 for f in d.iterdir())
+    if not d.is_dir():
+        return False
+    return all((d / n).is_file() and (d / n).stat().st_size > 0 for n in names)
 
 
-def save_card_backup(udid: str, card_hash: str, assets: list[tuple[str, bytes]]) -> bool:
-    """Stores the original artwork, once. Later flashes must not overwrite it.
+def save_card_backup(udid: str, card_hash: str, assets: list[tuple[str, bytes]], required=None) -> bool:
+    """Stores the original artwork, all of it or none of it.
 
-    Returns False if nothing usable was stored, so the caller can record that
-    this card has no way back rather than implying it does.
+    Returns False without touching disk when any required file is missing or
+    empty. The files land in a scratch folder first and are moved into place in
+    one rename, so an interrupted save cannot leave a partial backup behind that
+    later looks complete.
     """
-    usable = [(name, data) for name, data in assets if data]
-    if not usable:
+    import shutil
+    names = BACKED_UP_ASSETS if required is None else required
+    got = {name: data for name, data in assets if data}
+    if any(n not in got for n in names):
         return False
     d = card_backup_dir(udid, card_hash)
+    staging = d.with_name(d.name + ".partial")
     try:
-        d.mkdir(parents=True, exist_ok=True)
-        for name, data in usable:
-            (d / name).write_bytes(data)
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        for n in names:
+            (staging / n).write_bytes(got[n])
+        shutil.rmtree(d, ignore_errors=True)
+        staging.rename(d)
     except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
         return False
     return True
+
+
+def discard_card_backup(udid: str, card_hash: str) -> bool:
+    """Removes a saved original, so a wrong one can be replaced by a right one."""
+    import shutil
+    d = card_backup_dir(udid, card_hash)
+    if not d.exists():
+        return False
+    shutil.rmtree(d, ignore_errors=True)
+    return not d.exists()
+
+
+def _flashed_marker(udid: str, card_hash: str) -> Path:
+    return BACKUPS_ROOT / _backup_slug(udid) / ".flashed" / _backup_slug(card_hash)
+
+
+def mark_card_flashed(udid: str, card_hash: str) -> None:
+    """Remembers that AirCard has written to this card.
+
+    After that, what is on the card is not its original any more, and saving
+    it as the original would lock the skin in as the thing restore puts back.
+    """
+    m = _flashed_marker(udid, card_hash)
+    try:
+        m.parent.mkdir(parents=True, exist_ok=True)
+        m.touch()
+    except OSError:
+        pass
+
+
+def card_was_flashed(udid: str, card_hash: str) -> bool:
+    return _flashed_marker(udid, card_hash).exists()
 
 
 def read_card_backup(udid: str, card_hash: str) -> list[tuple[str, bytes]]:
@@ -153,7 +198,7 @@ def list_backed_up_cards(udid: str) -> list[str]:
         return []
     found = []
     for d in root.iterdir():
-        if not d.is_dir():
+        if not d.is_dir() or d.name.startswith(".") or d.name.endswith(".partial"):
             continue
         card = unquote(d.name)
         if has_card_backup(udid, card):

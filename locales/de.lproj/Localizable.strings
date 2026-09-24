@@ -14,9 +14,16 @@
 "designer.menu" = "Kartenvorderseite gestalten …";
 "designer.reset" = "Ausschnitt zurücksetzen";
 "designer.title" = "Karte %d gestalten";
+"discard.body" = "AirCard kann diese Karte danach nicht mehr wiederherstellen. Verwirf sie nur, wenn die gesicherte Grafik nicht das echte Design der Karte zeigt.";
+"discard.confirm" = "Verwerfen";
+"discard.title" = "Gesicherte Originalgrafik auf diesem Mac verwerfen?";
 "error.backend_unavailable" = "AirCard konnte seine Gerätewerkzeuge nicht starten. Meist hilft es, die App neu zu installieren.";
+"error.backup_already_changed" = "AirCard hat das Design dieser Karte bereits geändert, daher ist die aktuelle Grafik nicht mehr das Original. Um das Original zurückzubekommen, entferne die Karte aus der Wallet-App und füge sie erneut hinzu.";
+"error.backup_failed" = "Die Grafik der Karte konnte nicht gelesen werden, deshalb wurde nichts gesichert. Entsperre das iPhone und versuche es erneut.";
+"error.backup_incomplete" = "Die Grafik dieser Karte konnte nur teilweise gelesen werden, deshalb wurde nichts gesichert. Entsperre das iPhone und versuche es erneut.";
 "error.command_line_tools" = "AirCard benötigt die Command Line Tools von Apple. Öffne die App „Terminal“, führe „xcode-select --install“ aus, folge dem Installationsprogramm und klicke dann auf Aktualisieren.";
 "error.design_save_failed" = "Der Entwurf konnte nicht gesichert werden. Versuche es erneut oder wähle ein anderes Bild.";
+"error.discard_failed" = "Die gesicherte Originalgrafik konnte nicht entfernt werden.";
 "error.failed_to_inspect_passthm_file" = ".passthm-Datei konnte nicht gelesen werden";
 "error.failed_to_package_theme_for" = "Design konnte nicht zum Aufspielen gepackt werden.";
 "error.no_backup_for_card" = "Für diese Karte ist keine Originalgrafik gesichert. Sie kann nicht wiederhergestellt werden.";
@@ -26,6 +33,7 @@
 "error.please_assign_a_skin_image" = "Weise mindestens einer ausgewählten Karte einen Skin zu.";
 "error.please_configure_at_least_one" = "Richte vor dem Export mindestens eine Taste ein.";
 "error.please_connect_and_trust_your" = "Verbinde zuerst dein iPhone und vertraue diesem Computer.";
+"error.restore_failed" = "Die Karte konnte nicht vollständig wiederhergestellt werden. Entsperre das iPhone und versuche es erneut.";
 "error.theme_export_failed" = "Design konnte nicht exportiert werden: %@";
 "error.xcode_licence" = "macOS gibt ein Werkzeug, das AirCard benötigt, erst frei, wenn die Xcode-Lizenz akzeptiert ist. Öffne die App „Terminal“, führe „sudo xcodebuild -license accept“ aus und klicke dann auf Aktualisieren.";
 "lang.all" = "Alle Sprachen (universal)";
@@ -45,6 +53,7 @@
 "panel.save_theme_title" = "Code-Design sichern";
 "status.adopted_poster_slices_to_individual" = "Posterteile für einzelne Tasten übernommen";
 "status.backing_up" = "Originalgrafik wird gesichert …";
+"status.backup_discarded" = "Gesicherte Originalgrafik entfernt";
 "status.backup_failed" = "Originalgrafik konnte nicht gesichert werden";
 "status.backup_saved" = "Originalgrafik gesichert";
 "status.card_scanning_ended_check_the" = "Kartenscan beendet. Prüfe das Protokoll und verbinde das iPhone neu, um es erneut zu versuchen.";
@@ -64,7 +73,7 @@
 "status.iphone_needs_trust" = "Dein iPhone ist verbunden, vertraut diesem Mac aber noch nicht. Entsperre es, tippe auf „Vertrauen“ und klicke dann auf Aktualisieren.";
 "status.loaded_into_creator" = "„%1$@“ in den Design-Editor geladen (%2$d Tasten bereit zum Bearbeiten)";
 "status.loaded_theme" = "Code-Design „%1$@“ geladen (%2$d Grafiken)";
-"status.no_iphone_found_please_connect" = "Kein iPhone gefunden. Verbinde es per USB.";
+"status.no_iphone_allow_accessory" = "Kein iPhone gefunden. Verwende ein Kabel, das auch Daten überträgt, kein reines Ladekabel. Wenn dein Mac fragt, ob das Zubehör verbunden werden darf, klicke auf „Erlauben“.";
 "status.passcode_sent" = "An dein iPhone gesendet. Sperre es, um das neue Code-Tastenfeld zu sehen.";
 "status.poster_image_loaded_ready_to" = "Posterbild geladen · Bereit zum Ausrichten und Zerlegen";
 "status.preparing_skin" = "[%1$d/%2$d] Skin für %3$@ wird vorbereitet …";
@@ -118,6 +127,7 @@
 "ui.close" = "Schließen";
 "ui.copied" = "Kopiert!";
 "ui.copy_full_hash" = "Vollständigen Hash kopieren";
+"ui.copy_log" = "Alles kopieren";
 "ui.core_exploit" = "Kern-Exploit:";
 "ui.creator_status" = "Design-Editor · %1$d von 10 Tasten eingerichtet · Ziel: %2$@";
 "ui.credits" = "Mitwirkende";
@@ -127,6 +137,7 @@
 "ui.developer" = "Entwickler:";
 "ui.device_subtitle" = "%1$@ · iOS %2$@";
 "ui.device_with_link" = "%1$@ (%2$@)";
+"ui.discard_original" = "Gesicherte Originalgrafik verwerfen …";
 "ui.done" = "Fertig";
 "ui.double_click_side_button_apple" = "Drücke zweimal die Seitentaste (Apple Pay), bestätige mit Face ID und tippe auf deine Karte.";
 "ui.drag_anywhere_on_the_dialer" = "Zum Verschieben an beliebiger Stelle in der Tastenfeldvorschau ziehen";
@@ -157,6 +168,7 @@
 "ui.live_scanner_active" = "Live-Scan aktiv";
 "ui.lock_screen_keypad_preview" = "Vorschau: Tastenfeld im Sperrbildschirm";
 "ui.log" = "Protokoll";
+"ui.log_resize_help" = "Ziehen, um die Größe des Protokolls zu ändern";
 "ui.no_cards_detected_yet" = "Noch keine Karten gefunden";
 "ui.no_iphone_usb" = "Kein iPhone (USB)";
 "ui.no_passthm_loaded_select_a" = "Keine .passthm geladen · Wähle ein Design-Paket zum Aufspielen";

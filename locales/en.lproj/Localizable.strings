@@ -14,9 +14,16 @@
 "designer.menu" = "Design Card Face...";
 "designer.reset" = "Reset Framing";
 "designer.title" = "Design Card #%d";
+"discard.body" = "AirCard will no longer be able to restore this card. Only do this if what was saved is not the card's real design.";
+"discard.confirm" = "Discard";
+"discard.title" = "Discard the saved original?";
 "error.backend_unavailable" = "AirCard could not start its device tools. Reinstalling the app usually fixes this.";
+"error.backup_already_changed" = "AirCard has already changed this card, so what is on it now is not the original. To get the original back, remove the card from Wallet and add it again.";
+"error.backup_failed" = "The card's artwork could not be read, so nothing was saved. Try again with the iPhone unlocked.";
+"error.backup_incomplete" = "Only part of this card's artwork could be read, so nothing was saved. Try again with the iPhone unlocked.";
 "error.command_line_tools" = "AirCard needs Apple's Command Line Tools. Open Terminal, run \"xcode-select --install\", follow the installer, then click refresh.";
 "error.design_save_failed" = "The design could not be saved. Try again, or pick a different picture.";
+"error.discard_failed" = "The saved original could not be removed.";
 "error.failed_to_inspect_passthm_file" = "Failed to inspect .passthm file";
 "error.failed_to_package_theme_for" = "Failed to package theme for flashing.";
 "error.no_backup_for_card" = "There is no saved original for this card, so it cannot be restored.";
@@ -26,6 +33,7 @@
 "error.please_assign_a_skin_image" = "Please assign a skin image to at least one selected card.";
 "error.please_configure_at_least_one" = "Please configure at least one key before exporting.";
 "error.please_connect_and_trust_your" = "Please connect and trust your iPhone first.";
+"error.restore_failed" = "The card could not be fully restored. Try again with the iPhone unlocked.";
 "error.theme_export_failed" = "Failed to export theme: %@";
 "error.xcode_licence" = "macOS is holding back a tool AirCard needs until the Xcode licence is accepted. Open Terminal, run \"sudo xcodebuild -license accept\", then click refresh.";
 "lang.all" = "All Languages (Universal)";
@@ -45,6 +53,7 @@
 "panel.save_theme_title" = "Save Passcode Theme";
 "status.adopted_poster_slices_to_individual" = "Adopted poster slices to individual keys";
 "status.backing_up" = "Saving original artwork...";
+"status.backup_discarded" = "Saved original removed";
 "status.backup_failed" = "Could not save the original artwork";
 "status.backup_saved" = "Original artwork saved";
 "status.card_scanning_ended_check_the" = "Card scanning ended. Check the log and reconnect the iPhone to retry.";
@@ -64,7 +73,7 @@
 "status.iphone_needs_trust" = "Your iPhone is connected but has not trusted this Mac yet. Unlock it, tap Trust, then click refresh.";
 "status.loaded_into_creator" = "Loaded '%1$@' into Theme Creator (%2$d keys ready to edit)";
 "status.loaded_theme" = "Loaded passcode theme '%1$@' (%2$d assets)";
-"status.no_iphone_found_please_connect" = "No iPhone found. Please connect via USB.";
+"status.no_iphone_allow_accessory" = "No iPhone found. Use a cable that carries data, not a charge-only one. If your Mac asks whether to allow the accessory to connect, click Allow.";
 "status.passcode_sent" = "Sent to your iPhone. Lock it to see the new keypad.";
 "status.poster_image_loaded_ready_to" = "Poster image loaded · Ready to frame and slice";
 "status.preparing_skin" = "[%1$d/%2$d] Preparing skin for %3$@...";
@@ -118,6 +127,7 @@
 "ui.close" = "Close";
 "ui.copied" = "Copied!";
 "ui.copy_full_hash" = "Copy full hash";
+"ui.copy_log" = "Copy All";
 "ui.core_exploit" = "Core Exploit:";
 "ui.creator_status" = "Theme Creator · %1$d of 10 keys configured · Target: %2$@";
 "ui.credits" = "Credits";
@@ -127,6 +137,7 @@
 "ui.developer" = "Developer:";
 "ui.device_subtitle" = "%1$@ · iOS %2$@";
 "ui.device_with_link" = "%1$@ (%2$@)";
+"ui.discard_original" = "Discard Saved Original...";
 "ui.done" = "Done";
 "ui.double_click_side_button_apple" = "Double-click Side button (Apple Pay), pass Face ID, then tap your card.";
 "ui.drag_anywhere_on_the_dialer" = "Drag anywhere on the dialer preview to reposition";
@@ -157,6 +168,7 @@
 "ui.live_scanner_active" = "Live Scanner Active";
 "ui.lock_screen_keypad_preview" = "Lock Screen Keypad Preview";
 "ui.log" = "Log";
+"ui.log_resize_help" = "Drag to resize the log";
 "ui.no_cards_detected_yet" = "No Cards Detected Yet";
 "ui.no_iphone_usb" = "No iPhone (USB)";
 "ui.no_passthm_loaded_select_a" = "No .passthm loaded · Select a theme package to flash";

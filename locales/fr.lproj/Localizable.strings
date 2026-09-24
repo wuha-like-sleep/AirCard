@@ -14,9 +14,16 @@
 "designer.menu" = "Créer un habillage…";
 "designer.reset" = "Réinitialiser le cadrage";
 "designer.title" = "Habillage de la carte n° %d";
+"discard.body" = "Cette action est irréversible : AirCard ne pourra plus restaurer cette carte. Ne le faites que si l'illustration enregistrée ne correspond pas au véritable visuel de la carte.";
+"discard.confirm" = "Supprimer";
+"discard.title" = "Supprimer l'illustration d'origine enregistrée sur ce Mac ?";
 "error.backend_unavailable" = "AirCard n'a pas pu démarrer ses outils pour appareils. Réinstaller l'app règle généralement le problème.";
+"error.backup_already_changed" = "AirCard a déjà modifié cette carte : ce qu'elle affiche actuellement n'est donc plus l'illustration d'origine. Pour récupérer l'illustration d'origine, supprimez la carte de Wallet, puis ajoutez-la à nouveau.";
+"error.backup_failed" = "Impossible de lire l'illustration de la carte : rien n'a été enregistré. Réessayez avec l'iPhone déverrouillé.";
+"error.backup_incomplete" = "Seule une partie de l'illustration de cette carte a pu être lue : rien n'a été enregistré. Réessayez avec l'iPhone déverrouillé.";
 "error.command_line_tools" = "AirCard a besoin des outils de ligne de commande d'Apple. Ouvrez Terminal, exécutez « xcode-select --install », suivez les instructions d'installation, puis cliquez sur Actualiser.";
 "error.design_save_failed" = "Impossible d'enregistrer l'habillage. Réessayez ou choisissez une autre image.";
+"error.discard_failed" = "Impossible de supprimer l'illustration d'origine enregistrée sur ce Mac.";
 "error.failed_to_inspect_passthm_file" = "Impossible de lire le fichier .passthm";
 "error.failed_to_package_theme_for" = "Impossible de préparer le thème pour l'installation.";
 "error.no_backup_for_card" = "Aucune illustration d'origine enregistrée pour cette carte : restauration impossible.";
@@ -26,6 +33,7 @@
 "error.please_assign_a_skin_image" = "Attribuez un habillage à au moins une des cartes sélectionnées.";
 "error.please_configure_at_least_one" = "Configurez au moins une touche avant d'exporter.";
 "error.please_connect_and_trust_your" = "Connectez votre iPhone et touchez « Se fier » sur l'appareil.";
+"error.restore_failed" = "Impossible de restaurer entièrement la carte. Réessayez avec l'iPhone déverrouillé.";
 "error.theme_export_failed" = "Échec de l'exportation du thème : %@";
 "error.xcode_licence" = "macOS bloque un outil dont AirCard a besoin tant que la licence Xcode n'a pas été acceptée. Ouvrez Terminal, exécutez « sudo xcodebuild -license accept », puis cliquez sur Actualiser.";
 "lang.all" = "Toutes les langues (universel)";
@@ -45,6 +53,7 @@
 "panel.save_theme_title" = "Enregistrer le thème de code";
 "status.adopted_poster_slices_to_individual" = "Découpes de l'affiche appliquées aux touches";
 "status.backing_up" = "Enregistrement de l'illustration d'origine…";
+"status.backup_discarded" = "Illustration d'origine supprimée de ce Mac";
 "status.backup_failed" = "Impossible d'enregistrer l'illustration d'origine";
 "status.backup_saved" = "Illustration d'origine enregistrée";
 "status.card_scanning_ended_check_the" = "Recherche de cartes interrompue. Consultez le journal et reconnectez l'iPhone pour réessayer.";
@@ -64,7 +73,7 @@
 "status.iphone_needs_trust" = "Votre iPhone est connecté, mais il ne fait pas encore confiance à ce Mac. Déverrouillez-le, touchez « Se fier », puis cliquez sur Actualiser.";
 "status.loaded_into_creator" = "« %1$@ » ouvert dans le Créateur de thèmes (%2$d touches modifiables)";
 "status.loaded_theme" = "Thème de code « %1$@ » chargé (%2$d éléments)";
-"status.no_iphone_found_please_connect" = "Aucun iPhone détecté. Connectez-le en USB.";
+"status.no_iphone_allow_accessory" = "Aucun iPhone détecté. Utilisez un câble qui transfère les données, pas un simple câble de charge. Si votre Mac vous demande d'autoriser l'accessoire à se connecter, cliquez sur Autoriser.";
 "status.passcode_sent" = "Thème envoyé à votre iPhone. Verrouillez-le pour voir le nouveau clavier.";
 "status.poster_image_loaded_ready_to" = "Affiche chargée · Prête à cadrer et à découper";
 "status.preparing_skin" = "[%1$d/%2$d] Préparation de l'habillage de %3$@…";
@@ -118,6 +127,7 @@
 "ui.close" = "Fermer";
 "ui.copied" = "Copié !";
 "ui.copy_full_hash" = "Copier l'empreinte complète";
+"ui.copy_log" = "Tout copier";
 "ui.core_exploit" = "Exploit principal :";
 "ui.creator_status" = "Créateur de thèmes · %1$d touches sur 10 configurées · Cible : %2$@";
 "ui.credits" = "Remerciements";
@@ -127,6 +137,7 @@
 "ui.developer" = "Développeur :";
 "ui.device_subtitle" = "%1$@ · iOS %2$@";
 "ui.device_with_link" = "%1$@ (%2$@)";
+"ui.discard_original" = "Supprimer l'illustration d'origine enregistrée…";
 "ui.done" = "Terminé";
 "ui.double_click_side_button_apple" = "Double-cliquez sur le bouton latéral (Apple Pay), validez avec Face ID, puis touchez votre carte.";
 "ui.drag_anywhere_on_the_dialer" = "Faites glisser dans l'aperçu pour déplacer l'image";
@@ -157,6 +168,7 @@
 "ui.live_scanner_active" = "Recherche en cours";
 "ui.lock_screen_keypad_preview" = "Aperçu du clavier de l'écran verrouillé";
 "ui.log" = "Journal";
+"ui.log_resize_help" = "Faites glisser pour redimensionner le journal";
 "ui.no_cards_detected_yet" = "Aucune carte détectée";
 "ui.no_iphone_usb" = "Aucun iPhone (USB)";
 "ui.no_passthm_loaded_select_a" = "Aucun .passthm chargé · Sélectionnez un thème à installer";
