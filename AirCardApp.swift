@@ -571,6 +571,8 @@ class AppViewModel: ObservableObject {
     @Published var devices: [DeviceInfo] = []
     // Cards whose original artwork is saved on this Mac, so restore is real.
     @Published var backedUpCards: Set<String> = []
+    // The card whose face is open in the designer, if any.
+    @Published var designingCardID: String?
     @Published var isCheckingDevice = false
     @Published var isScanningCards = false
     @Published var cards: [CardItem] = []
@@ -822,6 +824,22 @@ class AppViewModel: ObservableObject {
         }
     }
     
+    // The designer hands back a finished card face. Write it out the same way a
+    // dropped image is, so the flash path treats it like any other skin.
+    func applyCardDesign(_ image: NSImage, for cardId: String) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aircard_design_\(UUID().uuidString).png")
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]),
+              (try? png.write(to: url)) != nil else {
+            errorMessage = L("error.design_save_failed", "The design could not be saved. Try again, or pick a different picture.")
+            return
+        }
+        setCardImage(for: cardId, url: url)
+        log("Designed a card face for: \(cardId.prefix(12))...")
+    }
+
     func clearCardImage(for cardId: String) {
         if let idx = cards.firstIndex(where: { $0.id == cardId }) {
             cards[idx].customImageURL = nil
@@ -1717,6 +1735,7 @@ struct WalletCardView: View {
     let busy: Bool
     let onPickImage: () -> Void
     let onClearImage: () -> Void
+    let onDesign: () -> Void
     let onBackup: () -> Void
     let onRestore: () -> Void
     let onDelete: () -> Void
@@ -1929,6 +1948,14 @@ struct WalletCardView: View {
                 }
                 
                 Menu {
+                    Button(action: onDesign) {
+                        Label(L("designer.menu", "Design Card Face..."),
+                              systemImage: "paintbrush.pointed")
+                    }
+                    .disabled(busy)
+
+                    Divider()
+
                     Button(action: onBackup) {
                         Label(L("ui.save_original", "Save Original Artwork"),
                               systemImage: "square.and.arrow.down")
@@ -1977,6 +2004,233 @@ struct WalletCardView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(card.isSelected ? Color.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
         )
+    }
+}
+
+// MARK: - Card Face Designer
+
+// A card face framed in the app rather than guessed at by a centre crop. Pan is
+// kept as a fraction of the card's width on both axes, so the preview and the
+// full-size render agree no matter how big the preview happens to be.
+struct CardFaceDesign {
+    var source: NSImage
+    var zoom: Double = 1.0
+    var offset: CGSize = .zero
+    var background: Color = .black
+
+    // Wallet's own card resolution. Rendering at exactly this size means the
+    // later prepare step has nothing left to crop.
+    static let pixelSize = CGSize(width: 1536, height: 969)
+    static let aspect = pixelSize.width / pixelSize.height
+    static let zoomRange: ClosedRange<Double> = 0.5...4.0
+
+    // The scale at which the image just covers the card. Zoom multiplies from
+    // here, so 1.0 always means edge to edge with nothing showing behind it.
+    static func fillScale(image: CGSize, card: CGSize) -> CGFloat {
+        guard image.width > 0, image.height > 0 else { return 1 }
+        return max(card.width / image.width, card.height / image.height)
+    }
+
+    func render() -> NSImage? {
+        let size = Self.pixelSize
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        rep.size = size
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSColor(background).setFill()
+        NSRect(origin: .zero, size: size).fill()
+
+        let scale = Self.fillScale(image: source.size, card: size) * CGFloat(zoom)
+        let w = source.size.width * scale
+        let h = source.size.height * scale
+        // AppKit draws from the bottom left while the drag is measured from the
+        // top, hence the minus on y.
+        let x = (size.width - w) / 2 + offset.width * size.width
+        let y = (size.height - h) / 2 - offset.height * size.width
+        source.draw(in: CGRect(x: x, y: y, width: w, height: h),
+                    from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        let image = NSImage(size: size)
+        image.addRepresentation(rep)
+        return image
+    }
+}
+
+struct CardFaceDesignerView: View {
+    let cardNumber: Int
+    let onApply: (NSImage) -> Void
+    let onCancel: () -> Void
+
+    @State private var design: CardFaceDesign?
+    @State private var dragStart: CGSize = .zero
+    @State private var isTargeted = false
+
+    init(cardNumber: Int, initialImage: NSImage?,
+         onApply: @escaping (NSImage) -> Void, onCancel: @escaping () -> Void) {
+        self.cardNumber = cardNumber
+        self.onApply = onApply
+        self.onCancel = onCancel
+        _design = State(initialValue: initialImage.map { CardFaceDesign(source: $0) })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(String(format: L("designer.title", "Design Card #%d"), cardNumber))
+                    .font(.headline)
+                Text(L("designer.hint", "Drag to move the picture, use the slider to size it. What you see is what goes on the card."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            canvas
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Text(L("ui.zoom", "Zoom"))
+                        .frame(width: 96, alignment: .leading)
+                    Slider(value: zoomBinding, in: CardFaceDesign.zoomRange)
+                    Text((design?.zoom ?? 1).formatted(.number.precision(.fractionLength(1))) + "×")
+                        .monospacedDigit()
+                        .frame(width: 44, alignment: .trailing)
+                }
+                HStack(spacing: 10) {
+                    Text(L("designer.background", "Background"))
+                        .frame(width: 96, alignment: .leading)
+                    ColorPicker("", selection: backgroundBinding, supportsOpacity: false)
+                        .labelsHidden()
+                    Spacer()
+                    Button(L("ui.choose_image", "Choose Image...")) { chooseImage() }
+                }
+            }
+            .disabled(design == nil)
+
+            HStack {
+                Button(L("ui.cancel", "Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(L("designer.reset", "Reset Framing")) {
+                    design?.zoom = 1
+                    design?.offset = .zero
+                    dragStart = .zero
+                }
+                .disabled(design == nil)
+                Button(L("designer.apply", "Use This Design")) {
+                    if let image = design?.render() { onApply(image) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(design == nil)
+            }
+        }
+        .padding(22)
+        .frame(width: 580)
+    }
+
+    private var canvas: some View {
+        GeometryReader { geo in
+            let card = CGSize(width: geo.size.width, height: geo.size.width / CardFaceDesign.aspect)
+            let radius = card.width * 0.045
+            ZStack {
+                if let d = design {
+                    d.background
+                    let scale = CardFaceDesign.fillScale(image: d.source.size, card: card) * CGFloat(d.zoom)
+                    Image(nsImage: d.source)
+                        .resizable()
+                        .frame(width: d.source.size.width * scale, height: d.source.size.height * scale)
+                        .offset(x: d.offset.width * card.width, y: d.offset.height * card.width)
+                } else {
+                    Color(NSColor.controlBackgroundColor)
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 30))
+                        Text(L("designer.empty", "Drop a picture here to start"))
+                            .font(.callout)
+                        Button(L("ui.choose_image", "Choose Image...")) { chooseImage() }
+                    }
+                    .foregroundColor(.secondary)
+                }
+            }
+            .frame(width: card.width, height: card.height)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(isTargeted ? Color.accentColor : Color.secondary.opacity(0.25),
+                            lineWidth: isTargeted ? 2 : 1)
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        guard design != nil else { return }
+                        design?.offset = CGSize(
+                            width: dragStart.width + value.translation.width / card.width,
+                            height: dragStart.height + value.translation.height / card.width
+                        )
+                    }
+                    .onEnded { _ in dragStart = design?.offset ?? .zero }
+            )
+            .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
+                load(from: providers)
+            }
+        }
+        .aspectRatio(CardFaceDesign.aspect, contentMode: .fit)
+    }
+
+    private var zoomBinding: Binding<Double> {
+        Binding(get: { design?.zoom ?? 1 }, set: { design?.zoom = $0 })
+    }
+
+    private var backgroundBinding: Binding<Color> {
+        Binding(get: { design?.background ?? .black }, set: { design?.background = $0 })
+    }
+
+    private func start(with image: NSImage) {
+        let background = design?.background ?? .black
+        design = CardFaceDesign(source: image, background: background)
+        dragStart = .zero
+    }
+
+    private func chooseImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.message = L("designer.choose_message", "Choose a picture for this card")
+        if panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) {
+            start(with: image)
+        }
+    }
+
+    private func load(from providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, let image = NSImage(contentsOf: url) else { return }
+                Task { @MainActor in start(with: image) }
+            }
+            return true
+        }
+        if provider.canLoadObject(ofClass: NSImage.self) {
+            _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
+                guard let image = object as? NSImage else { return }
+                Task { @MainActor in start(with: image) }
+            }
+            return true
+        }
+        return false
     }
 }
 
@@ -2044,6 +2298,7 @@ struct ContentView: View {
                                     busy: vm.isFlashing,
                                     onPickImage: { openCardImagePicker(for: vm.cards[idx].id) },
                                     onClearImage: { vm.clearCardImage(for: vm.cards[idx].id) },
+                                    onDesign: { vm.designingCardID = vm.cards[idx].id },
                                     onBackup: { vm.backupCard(id: vm.cards[idx].id) },
                                     onRestore: { vm.restoreCard(id: vm.cards[idx].id) },
                                     onDelete: { vm.deleteCard(id: vm.cards[idx].id) }
@@ -2074,6 +2329,23 @@ struct ContentView: View {
                 .background(Color(NSColor.controlBackgroundColor))
         }
         .frame(minWidth: 880, minHeight: 680)
+        .sheet(isPresented: Binding(
+            get: { vm.designingCardID != nil },
+            set: { if !$0 { vm.designingCardID = nil } }
+        )) {
+            if let id = vm.designingCardID,
+               let index = vm.cards.firstIndex(where: { $0.id == id }) {
+                CardFaceDesignerView(
+                    cardNumber: index + 1,
+                    initialImage: vm.cards[index].customImage,
+                    onApply: { image in
+                        vm.applyCardDesign(image, for: id)
+                        vm.designingCardID = nil
+                    },
+                    onCancel: { vm.designingCardID = nil }
+                )
+            }
+        }
         .alert(L("ui.something_went_wrong", "Something went wrong"), isPresented: Binding(
             get: { vm.errorMessage != nil },
             set: { if !$0 { vm.errorMessage = nil } }
