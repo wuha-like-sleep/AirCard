@@ -6,7 +6,17 @@
 "bold.short_bold" = "Gras";
 "bold.short_both" = "Normal + gras";
 "bold.short_regular" = "Normal";
-"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
+"designer.apply" = "Utiliser cet habillage";
+"designer.background" = "Arrière-plan";
+"designer.choose_message" = "Choisissez une image pour cette carte";
+"designer.empty" = "Déposez une image ici pour commencer";
+"designer.hint" = "Faites glisser l'image pour la déplacer et utilisez le curseur pour la redimensionner. La carte sera identique à l'aperçu.";
+"designer.menu" = "Créer un habillage…";
+"designer.reset" = "Réinitialiser le cadrage";
+"designer.title" = "Habillage de la carte n° %d";
+"error.backend_unavailable" = "AirCard n'a pas pu démarrer ses outils pour appareils. Réinstaller l'app règle généralement le problème.";
+"error.command_line_tools" = "AirCard a besoin des outils de ligne de commande d'Apple. Ouvrez Terminal, exécutez « xcode-select --install », suivez les instructions d'installation, puis cliquez sur Actualiser.";
+"error.design_save_failed" = "Impossible d'enregistrer l'habillage. Réessayez ou choisissez une autre image.";
 "error.failed_to_inspect_passthm_file" = "Impossible de lire le fichier .passthm";
 "error.failed_to_package_theme_for" = "Impossible de préparer le thème pour l'installation.";
 "error.no_backup_for_card" = "Aucune illustration d'origine enregistrée pour cette carte : restauration impossible.";
@@ -17,6 +27,7 @@
 "error.please_configure_at_least_one" = "Configurez au moins une touche avant d'exporter.";
 "error.please_connect_and_trust_your" = "Connectez votre iPhone et touchez « Se fier » sur l'appareil.";
 "error.theme_export_failed" = "Échec de l'exportation du thème : %@";
+"error.xcode_licence" = "macOS bloque un outil dont AirCard a besoin tant que la licence Xcode n'a pas été acceptée. Ouvrez Terminal, exécutez « sudo xcodebuild -license accept », puis cliquez sur Actualiser.";
 "lang.all" = "Toutes les langues (universel)";
 "lang.other" = "Autre / par défaut";
 "mode.apply_theme" = "Appliquer un .passthm";
@@ -149,7 +160,7 @@
 "ui.on_your_iphone_double_click" = "Sur votre iPhone, **double-cliquez sur le bouton latéral** (Apple Pay), validez avec **Face ID**, puis **touchez votre carte**.";
 "ui.original_saved" = "Illustration d'origine enregistrée";
 "ui.passcode_theme_file" = "Fichier de thème de code";
-"ui.passcode_theme_successfully_applied_n" = "Thème de code appliqué !\\\\\\\\n\\\\\\\\nVerrouillez votre iPhone (ou redémarrez-le) pour découvrir votre nouveau clavier.";
+"ui.passcode_theme_successfully_applied_n" = "Thème de code appliqué !\n\nVerrouillez votre iPhone (ou redémarrez-le) pour découvrir votre nouveau clavier.";
 "ui.passcode_themes" = "Thèmes de code :";
 "ui.passthm_standard_cowabunga_nugget" = "standard .passthm (Cowabunga / Nugget)";
 "ui.paste_one_or_more_card" = "Collez une ou plusieurs empreintes de carte (séparées par des espaces, des virgules ou des retours à la ligne) :";
@@ -171,7 +182,7 @@
 "ui.select_all" = "Tout sélectionner";
 "ui.set_skin_for_all" = "Habiller toutes les cartes…";
 "ui.skin_assigned_and_ready" = "Habillage attribué · Prêt";
-"ui.skins_successfully_applied_to_all" = "Habillages appliqués à toutes les cartes sélectionnées !\\\\\\\\n\\\\\\\\nForcez la fermeture de Wallet sur votre iPhone (ou redémarrez-le) pour découvrir vos nouveaux visuels.";
+"ui.skins_successfully_applied_to_all" = "Habillages appliqués à toutes les cartes sélectionnées !\n\nForcez la fermeture de Wallet sur votre iPhone (ou redémarrez-le) pour découvrir vos nouveaux visuels.";
 "ui.slice_circle_desc" = "L'illustration est découpée en icônes rondes, une par touche.";
 "ui.slice_seamless_desc" = "L'illustration s'étend sur tout le clavier, sans découpe ronde (style Adobe Dog).";
 "ui.slicing_style" = "Style de découpe";

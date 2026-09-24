@@ -6,7 +6,17 @@
 "bold.short_bold" = "粗體";
 "bold.short_both" = "一般＋粗體";
 "bold.short_regular" = "一般";
-"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
+"designer.apply" = "使用此設計";
+"designer.background" = "背景";
+"designer.choose_message" = "為這張卡片選擇圖片";
+"designer.empty" = "將圖片拖到這裡即可開始";
+"designer.hint" = "拖移圖片可調整位置，用滑桿縮放。這裡看到什麼，卡片上就是什麼。";
+"designer.menu" = "設計卡片外觀…";
+"designer.reset" = "重設構圖";
+"designer.title" = "設計卡片 %d";
+"error.backend_unavailable" = "AirCard 無法啟動裝置工具。重新安裝 App 通常就能解決。";
+"error.command_line_tools" = "AirCard 需要 Apple 的指令列工具。請打開「終端機」，執行「xcode-select --install」，依照畫面指示完成安裝，再按一下重新整理。";
+"error.design_save_failed" = "無法儲存設計。請再試一次，或改選其他圖片。";
 "error.failed_to_inspect_passthm_file" = "無法讀取 .passthm 檔案";
 "error.failed_to_package_theme_for" = "主題封裝失敗，無法寫入。";
 "error.no_backup_for_card" = "尚未儲存這張卡片的原始圖稿，無法還原。";
@@ -17,6 +27,7 @@
 "error.please_configure_at_least_one" = "匯出前請至少設定一個按鍵。";
 "error.please_connect_and_trust_your" = "請先連接並信任你的 iPhone。";
 "error.theme_export_failed" = "主題匯出失敗：%@";
+"error.xcode_licence" = "要先接受 Xcode 授權條款，macOS 才會讓 AirCard 使用所需的工具。請打開「終端機」，執行「sudo xcodebuild -license accept」，再按一下重新整理。";
 "lang.all" = "所有語言（通用）";
 "lang.other" = "其他／備用";
 "mode.apply_theme" = "套用 .passthm";
@@ -149,7 +160,7 @@
 "ui.on_your_iphone_double_click" = "在 iPhone 上**按兩下側邊按鈕**（Apple Pay），用 **Face ID** 驗證，然後**點一下你的卡片**。";
 "ui.original_saved" = "原始圖稿已儲存";
 "ui.passcode_theme_file" = "密碼主題檔案";
-"ui.passcode_theme_successfully_applied_n" = "密碼主題已成功套用！\\\\n\\\\n鎖定 iPhone（或重新開機）就會看到新的密碼鍵盤。";
+"ui.passcode_theme_successfully_applied_n" = "密碼主題已成功套用！\n\n鎖定 iPhone（或重新開機）就會看到新的密碼鍵盤。";
 "ui.passcode_themes" = "密碼主題：";
 "ui.passthm_standard_cowabunga_nugget" = ".passthm 標準格式（Cowabunga／Nugget）";
 "ui.paste_one_or_more_card" = "貼上一組或多組卡片雜湊值（以空格、逗號或換行分隔）：";
@@ -171,7 +182,7 @@
 "ui.select_all" = "全選";
 "ui.set_skin_for_all" = "全部指定同一外觀…";
 "ui.skin_assigned_and_ready" = "外觀已指定，可以寫入";
-"ui.skins_successfully_applied_to_all" = "所有選取的卡片都已套用新外觀！\\\\n\\\\n請在 iPhone 上強制結束「錢包」App（或重新開機），就能看到新的設計。";
+"ui.skins_successfully_applied_to_all" = "所有選取的卡片都已套用新外觀！\n\n請在 iPhone 上強制結束「錢包」App（或重新開機），就能看到新的設計。";
 "ui.slice_circle_desc" = "圖稿會裁切成一個個圓形按鍵圖像。";
 "ui.slice_seamless_desc" = "圖稿完整橫跨整個鍵盤，不做圓形裁切（Adobe Dog 風格）。";
 "ui.slicing_style" = "切割方式";

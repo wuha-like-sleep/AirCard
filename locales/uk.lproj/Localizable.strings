@@ -6,7 +6,17 @@
 "bold.short_bold" = "Жирний";
 "bold.short_both" = "Звичайний + жирний";
 "bold.short_regular" = "Звичайний";
-"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
+"designer.apply" = "Використати це оформлення";
+"designer.background" = "Тло";
+"designer.choose_message" = "Виберіть зображення для цієї картки";
+"designer.empty" = "Перетягніть сюди зображення, щоб почати";
+"designer.hint" = "Перетягніть зображення, щоб посунути його, і змініть масштаб повзунком. На картці буде саме те, що ви бачите тут.";
+"designer.menu" = "Створити оформлення картки…";
+"designer.reset" = "Скинути кадрування";
+"designer.title" = "Оформлення картки №%d";
+"error.backend_unavailable" = "AirCard не вдалося запустити інструменти для роботи з пристроєм. Зазвичай допомагає перевстановлення програми.";
+"error.command_line_tools" = "Для роботи AirCard потрібні інструменти командного рядка від Apple. Відкрийте Термінал, виконайте «xcode-select --install», дотримуйтеся вказівок інсталятора, а потім натисніть кнопку оновлення.";
+"error.design_save_failed" = "Не вдалося зберегти оформлення. Повторіть спробу або виберіть інше зображення.";
 "error.failed_to_inspect_passthm_file" = "Не вдалося прочитати файл .passthm";
 "error.failed_to_package_theme_for" = "Не вдалося підготувати тему до запису.";
 "error.no_backup_for_card" = "Для цієї картки немає збереженого оригіналу, тому відновити її неможливо.";
@@ -17,6 +27,7 @@
 "error.please_configure_at_least_one" = "Перед експортом налаштуйте хоча б одну клавішу.";
 "error.please_connect_and_trust_your" = "Спершу підключіть iPhone і натисніть на ньому «Довіряти».";
 "error.theme_export_failed" = "Не вдалося експортувати тему: %@";
+"error.xcode_licence" = "macOS не дає AirCard запустити потрібний інструмент, доки не прийнято ліцензію Xcode. Відкрийте Термінал, виконайте «sudo xcodebuild -license accept», а потім натисніть кнопку оновлення.";
 "lang.all" = "Усі мови (універсально)";
 "lang.other" = "Інша / резервна";
 "mode.apply_theme" = "Застосувати .passthm";
@@ -149,7 +160,7 @@
 "ui.on_your_iphone_double_click" = "На iPhone **двічі натисніть бічну кнопку** (Apple Pay), пройдіть автентифікацію **Face ID** і **торкніться картки**.";
 "ui.original_saved" = "Оригінал збережено";
 "ui.passcode_theme_file" = "Файл теми код-пароля";
-"ui.passcode_theme_successfully_applied_n" = "Тему код-пароля застосовано!\\\\n\\\\nЗаблокуйте iPhone (або перезапустіть його), щоб побачити нову клавіатуру код-пароля.";
+"ui.passcode_theme_successfully_applied_n" = "Тему код-пароля застосовано!\n\nЗаблокуйте iPhone (або перезапустіть його), щоб побачити нову клавіатуру код-пароля.";
 "ui.passcode_themes" = "Теми код-пароля:";
 "ui.passthm_standard_cowabunga_nugget" = "Стандарт .passthm (Cowabunga / Nugget)";
 "ui.paste_one_or_more_card" = "Вставте один або кілька хешів карток (через пробіл, кому або з нового рядка):";
@@ -171,7 +182,7 @@
 "ui.select_all" = "Вибрати все";
 "ui.set_skin_for_all" = "Задати оформлення для всіх…";
 "ui.skin_assigned_and_ready" = "Оформлення призначено, усе готово";
-"ui.skins_successfully_applied_to_all" = "Оформлення застосовано до всіх вибраних карток!\\\\n\\\\nПримусово закрийте Wallet на iPhone (або перезапустіть його), щоб побачити новий вигляд.";
+"ui.skins_successfully_applied_to_all" = "Оформлення застосовано до всіх вибраних карток!\n\nПримусово закрийте Wallet на iPhone (або перезапустіть його), щоб побачити новий вигляд.";
 "ui.slice_circle_desc" = "Зображення обрізається під круглі іконки кнопок.";
 "ui.slice_seamless_desc" = "Зображення суцільно лягає на всі клавіші без круглих вирізів (як у Adobe Dog).";
 "ui.slicing_style" = "Спосіб нарізки";

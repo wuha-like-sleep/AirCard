@@ -97,6 +97,38 @@ class LocalizationTests(unittest.TestCase):
                 f"{lang}: {len(identical)}/{len(long_keys)} long strings are still the English text",
             )
 
+    def test_escapes_are_not_doubled(self):
+        """A \\n in a .strings file renders as a backslash and an n, not a line.
+
+        Round-tripping a file through a script that escapes on the way back out
+        doubles every backslash, and it compounds on each pass. Nothing else here
+        notices: the keys all match, the format specifiers all survive.
+        """
+        for path in strings_files():
+            lang = path.parent.name
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith(("/*", "//", "*")):
+                    continue
+                self.assertNotIn(
+                    "\\\\", line,
+                    f"{lang} line {n} has a doubled backslash, which shows up on "
+                    f"screen as literal text: {line[:90]}",
+                )
+
+    def test_line_breaks_survive_translation(self):
+        for path in strings_files():
+            lang = path.parent.name
+            entries = parse(path)
+            for key, english in self.base.items():
+                if key not in entries:
+                    continue
+                want = english.count("\\n")
+                got = entries[key].count("\\n")
+                self.assertEqual(
+                    got, want,
+                    f"{lang} / {key}: {want} line break(s) in English, {got} here",
+                )
+
     def test_files_are_well_formed(self):
         for path in strings_files():
             result = subprocess.run(["plutil", "-lint", str(path)], capture_output=True, text=True)

@@ -6,7 +6,17 @@
 "bold.short_bold" = "Fett";
 "bold.short_both" = "Normal + Fett";
 "bold.short_regular" = "Normal";
-"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
+"designer.apply" = "Diesen Entwurf verwenden";
+"designer.background" = "Hintergrund";
+"designer.choose_message" = "Wähle ein Bild für diese Karte …";
+"designer.empty" = "Bild hierher ziehen, um zu beginnen";
+"designer.hint" = "Bild zum Verschieben ziehen, Größe mit dem Regler anpassen. Was du hier siehst, kommt genau so auf die Karte.";
+"designer.menu" = "Kartenvorderseite gestalten …";
+"designer.reset" = "Ausschnitt zurücksetzen";
+"designer.title" = "Karte %d gestalten";
+"error.backend_unavailable" = "AirCard konnte seine Gerätewerkzeuge nicht starten. Meist hilft es, die App neu zu installieren.";
+"error.command_line_tools" = "AirCard benötigt die Command Line Tools von Apple. Öffne die App „Terminal“, führe „xcode-select --install“ aus, folge dem Installationsprogramm und klicke dann auf Aktualisieren.";
+"error.design_save_failed" = "Der Entwurf konnte nicht gesichert werden. Versuche es erneut oder wähle ein anderes Bild.";
 "error.failed_to_inspect_passthm_file" = ".passthm-Datei konnte nicht gelesen werden";
 "error.failed_to_package_theme_for" = "Design konnte nicht zum Aufspielen gepackt werden.";
 "error.no_backup_for_card" = "Für diese Karte ist keine Originalgrafik gesichert. Sie kann nicht wiederhergestellt werden.";
@@ -17,6 +27,7 @@
 "error.please_configure_at_least_one" = "Richte vor dem Export mindestens eine Taste ein.";
 "error.please_connect_and_trust_your" = "Verbinde zuerst dein iPhone und vertraue diesem Computer.";
 "error.theme_export_failed" = "Design konnte nicht exportiert werden: %@";
+"error.xcode_licence" = "macOS gibt ein Werkzeug, das AirCard benötigt, erst frei, wenn die Xcode-Lizenz akzeptiert ist. Öffne die App „Terminal“, führe „sudo xcodebuild -license accept“ aus und klicke dann auf Aktualisieren.";
 "lang.all" = "Alle Sprachen (universal)";
 "lang.other" = "Sonstige / Standard";
 "mode.apply_theme" = ".passthm anwenden";
@@ -149,7 +160,7 @@
 "ui.on_your_iphone_double_click" = "Drücke auf deinem iPhone **zweimal die Seitentaste** (Apple Pay), bestätige mit **Face ID** und **tippe auf deine Karte**.";
 "ui.original_saved" = "Originalgrafik ist gesichert";
 "ui.passcode_theme_file" = "Code-Design-Datei";
-"ui.passcode_theme_successfully_applied_n" = "Code-Design erfolgreich angewendet!\\\\n\\\\nSperre dein iPhone (oder starte es neu), um das neue Code-Tastenfeld zu sehen.";
+"ui.passcode_theme_successfully_applied_n" = "Code-Design erfolgreich angewendet!\n\nSperre dein iPhone (oder starte es neu), um das neue Code-Tastenfeld zu sehen.";
 "ui.passcode_themes" = "Code-Designs:";
 "ui.passthm_standard_cowabunga_nugget" = ".passthm-Standard (Cowabunga / Nugget)";
 "ui.paste_one_or_more_card" = "Füge einen oder mehrere Karten-Hashes ein (getrennt durch Leerzeichen, Kommas oder Zeilenumbrüche):";
@@ -171,7 +182,7 @@
 "ui.select_all" = "Alle auswählen";
 "ui.set_skin_for_all" = "Skin für alle festlegen …";
 "ui.skin_assigned_and_ready" = "Skin zugewiesen und bereit";
-"ui.skins_successfully_applied_to_all" = "Skins erfolgreich auf alle ausgewählten Karten angewendet!\\\\n\\\\nBeende die Wallet-App auf deinem iPhone vollständig (oder starte das iPhone neu), um die neuen Designs zu sehen.";
+"ui.skins_successfully_applied_to_all" = "Skins erfolgreich auf alle ausgewählten Karten angewendet!\n\nBeende die Wallet-App auf deinem iPhone vollständig (oder starte das iPhone neu), um die neuen Designs zu sehen.";
 "ui.slice_circle_desc" = "Die Grafik wird in einzelne runde Tastensymbole geschnitten.";
 "ui.slice_seamless_desc" = "Die Grafik läuft nahtlos über alle Tasten, ohne runde Ausschnitte (Adobe-Dog-Stil).";
 "ui.slicing_style" = "Schnittart";

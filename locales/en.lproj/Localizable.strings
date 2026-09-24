@@ -6,7 +6,17 @@
 "bold.short_bold" = "Bold";
 "bold.short_both" = "Regular + Bold";
 "bold.short_regular" = "Regular";
-"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
+"designer.apply" = "Use This Design";
+"designer.background" = "Background";
+"designer.choose_message" = "Choose a picture for this card";
+"designer.empty" = "Drop a picture here to start";
+"designer.hint" = "Drag to move the picture, use the slider to size it. What you see is what goes on the card.";
+"designer.menu" = "Design Card Face...";
+"designer.reset" = "Reset Framing";
+"designer.title" = "Design Card #%d";
+"error.backend_unavailable" = "AirCard could not start its device tools. Reinstalling the app usually fixes this.";
+"error.command_line_tools" = "AirCard needs Apple's Command Line Tools. Open Terminal, run \"xcode-select --install\", follow the installer, then click refresh.";
+"error.design_save_failed" = "The design could not be saved. Try again, or pick a different picture.";
 "error.failed_to_inspect_passthm_file" = "Failed to inspect .passthm file";
 "error.failed_to_package_theme_for" = "Failed to package theme for flashing.";
 "error.no_backup_for_card" = "There is no saved original for this card, so it cannot be restored.";
@@ -17,6 +27,7 @@
 "error.please_configure_at_least_one" = "Please configure at least one key before exporting.";
 "error.please_connect_and_trust_your" = "Please connect and trust your iPhone first.";
 "error.theme_export_failed" = "Failed to export theme: %@";
+"error.xcode_licence" = "macOS is holding back a tool AirCard needs until the Xcode licence is accepted. Open Terminal, run \"sudo xcodebuild -license accept\", then click refresh.";
 "lang.all" = "All Languages (Universal)";
 "lang.other" = "Other / Fallback";
 "mode.apply_theme" = "Apply .passthm";
@@ -149,7 +160,7 @@
 "ui.on_your_iphone_double_click" = "On your iPhone, **double-click the Side button** (Apple Pay), authenticate with **Face ID**, and **tap your card**.";
 "ui.original_saved" = "Original artwork is saved";
 "ui.passcode_theme_file" = "Passcode Theme File";
-"ui.passcode_theme_successfully_applied_n" = "Passcode theme successfully applied!\\n\\nLock your iPhone (or restart) to see your new passcode keypad.";
+"ui.passcode_theme_successfully_applied_n" = "Passcode theme successfully applied!\n\nLock your iPhone (or restart) to see your new passcode keypad.";
 "ui.passcode_themes" = "Passcode Themes:";
 "ui.passthm_standard_cowabunga_nugget" = ".passthm standard (Cowabunga / Nugget)";
 "ui.paste_one_or_more_card" = "Paste one or more card hashes (separated by spaces, commas, or newlines):";
@@ -171,7 +182,7 @@
 "ui.select_all" = "Select All";
 "ui.set_skin_for_all" = "Set Skin for All...";
 "ui.skin_assigned_and_ready" = "Skin assigned and ready";
-"ui.skins_successfully_applied_to_all" = "Skins successfully applied to all selected cards!\\n\\nPlease force-close the Wallet app on your iPhone (or reboot) to see your new designs.";
+"ui.skins_successfully_applied_to_all" = "Skins successfully applied to all selected cards!\n\nPlease force-close the Wallet app on your iPhone (or reboot) to see your new designs.";
 "ui.slice_circle_desc" = "Artwork is clipped into individual circular button icons.";
 "ui.slice_seamless_desc" = "Seamless artwork spans across dialer keys without circular cuts (Adobe Dog style).";
 "ui.slicing_style" = "Slicing Style";

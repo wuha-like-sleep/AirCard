@@ -6,7 +6,17 @@
 "bold.short_bold" = "굵게";
 "bold.short_both" = "일반 + 굵게";
 "bold.short_regular" = "일반";
-"error.backend_unavailable" = "AirCard could not run its device tools. The app may be damaged or incompletely installed.";
+"designer.apply" = "이 디자인 사용";
+"designer.background" = "배경";
+"designer.choose_message" = "이 카드에 사용할 이미지를 선택하십시오";
+"designer.empty" = "시작하려면 여기에 이미지를 놓으십시오";
+"designer.hint" = "드래그하여 이미지를 옮기고 슬라이더로 크기를 조절하십시오. 보이는 그대로 카드에 적용됩니다.";
+"designer.menu" = "카드 앞면 디자인...";
+"designer.reset" = "구도 재설정";
+"designer.title" = "%d번 카드 디자인";
+"error.backend_unavailable" = "AirCard에서 기기 도구를 시작하지 못했습니다. 앱을 다시 설치하면 대부분 해결됩니다.";
+"error.command_line_tools" = "AirCard를 사용하려면 Apple의 명령어 라인 개발자 도구가 필요합니다. 터미널을 열고 \"xcode-select --install\" 명령을 실행한 후 설치 안내에 따라 설치를 마친 다음 새로 고침을 클릭하십시오.";
+"error.design_save_failed" = "디자인을 저장하지 못했습니다. 다시 시도하거나 다른 이미지를 선택하십시오.";
 "error.failed_to_inspect_passthm_file" = ".passthm 파일을 확인하지 못했습니다";
 "error.failed_to_package_theme_for" = "적용할 테마를 준비하지 못했습니다.";
 "error.no_backup_for_card" = "이 카드는 저장된 원본이 없어 복원할 수 없습니다.";
@@ -17,6 +27,7 @@
 "error.please_configure_at_least_one" = "내보내기 전에 키를 하나 이상 설정하십시오.";
 "error.please_connect_and_trust_your" = "먼저 iPhone을 연결하고 이 컴퓨터를 신뢰하십시오.";
 "error.theme_export_failed" = "테마를 내보내지 못했습니다: %@";
+"error.xcode_licence" = "Xcode 사용권 계약에 동의해야 macOS에서 AirCard에 필요한 도구를 사용할 수 있습니다. 터미널을 열고 \"sudo xcodebuild -license accept\" 명령을 실행한 다음 새로 고침을 클릭하십시오.";
 "lang.all" = "모든 언어 (통합)";
 "lang.other" = "기타 / 대체";
 "mode.apply_theme" = ".passthm 적용";
@@ -149,7 +160,7 @@
 "ui.on_your_iphone_double_click" = "iPhone에서 **측면 버튼을 두 번 누르고**(Apple Pay) **Face ID**로 인증한 다음 **카드를 탭**하십시오.";
 "ui.original_saved" = "원본 아트워크 저장됨";
 "ui.passcode_theme_file" = "암호 테마 파일";
-"ui.passcode_theme_successfully_applied_n" = "암호 테마를 적용했습니다!\\\\\\\\n\\\\\\\\niPhone을 잠갔다 켜거나 재시동하면 새 암호 키패드가 나타납니다.";
+"ui.passcode_theme_successfully_applied_n" = "암호 테마를 적용했습니다!\n\niPhone을 잠갔다 켜거나 재시동하면 새 암호 키패드가 나타납니다.";
 "ui.passcode_themes" = "암호 테마:";
 "ui.passthm_standard_cowabunga_nugget" = ".passthm 표준 (Cowabunga / Nugget)";
 "ui.paste_one_or_more_card" = "카드 해시를 하나 이상 붙여넣으십시오(공백, 쉼표, 줄바꿈으로 구분):";
@@ -171,7 +182,7 @@
 "ui.select_all" = "모두 선택";
 "ui.set_skin_for_all" = "모든 카드에 스킨 지정...";
 "ui.skin_assigned_and_ready" = "스킨 지정 완료";
-"ui.skins_successfully_applied_to_all" = "선택한 모든 카드에 스킨을 적용했습니다!\\\\\\\\n\\\\\\\\niPhone에서 지갑 앱을 강제 종료하거나 재시동하면 새 디자인이 나타납니다.";
+"ui.skins_successfully_applied_to_all" = "선택한 모든 카드에 스킨을 적용했습니다!\n\niPhone에서 지갑 앱을 강제 종료하거나 재시동하면 새 디자인이 나타납니다.";
 "ui.slice_circle_desc" = "아트워크를 원형 버튼 아이콘으로 하나씩 잘라냅니다.";
 "ui.slice_seamless_desc" = "아트워크가 원형으로 잘리지 않고 키패드 전체에 이어집니다(Adobe Dog 스타일).";
 "ui.slicing_style" = "분할 방식";

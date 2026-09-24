@@ -621,19 +621,37 @@ class AppViewModel: ObservableObject {
         logs.append("[\(timestamp)] \(message)")
     }
     
-    nonisolated private static var pythonExecutableURL: URL {
-        let candidates = [
-            "/usr/bin/python3",
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3"
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path)
-            }
+    // /usr/bin/python3 is Apple's shim onto the Command Line Tools. It counts as
+    // an executable even when it cannot run — licence not accepted, tools not
+    // installed — and it sits ahead of a perfectly good Homebrew python. That is
+    // why "sudo xcodebuild -license accept" became the fix people passed around
+    // for a Wallet app. Running each candidate is the only honest test.
+    nonisolated static let pythonCandidates = [
+        "/usr/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3"
+    ]
+
+    nonisolated static func firstWorkingPython(in candidates: [String], timeout: TimeInterval = 5) -> String? {
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            let probe = Process()
+            probe.executableURL = URL(fileURLWithPath: path)
+            probe.arguments = ["-c", ""]
+            probe.standardOutput = FileHandle.nullDevice
+            probe.standardError = FileHandle.nullDevice
+            do { try probe.run() } catch { continue }
+            // The shim can sit on an install prompt instead of exiting.
+            let deadline = Date().addingTimeInterval(timeout)
+            while probe.isRunning && Date() < deadline { usleep(20_000) }
+            if probe.isRunning { probe.terminate(); continue }
+            if probe.terminationStatus == 0 { return path }
         }
-        return URL(fileURLWithPath: "/usr/bin/python3")
+        return nil
     }
+
+    nonisolated private static let pythonExecutableURL: URL = {
+        URL(fileURLWithPath: firstWorkingPython(in: pythonCandidates) ?? "/usr/bin/python3")
+    }()
     
     nonisolated private static var deviceHelperExecutableURL: URL? {
         var candidates: [String] = []
@@ -699,6 +717,56 @@ class AppViewModel: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    // What the backend's error output says went wrong, in the user's words. The
+    // three causes people actually hit all used to surface as "No iPhone found".
+    enum BackendFailure: Equatable {
+        case xcodeLicence
+        case commandLineTools
+        case unknown
+    }
+
+    nonisolated static func diagnoseBackendFailure(_ stderr: String) -> BackendFailure {
+        let text = stderr.lowercased()
+        if text.contains("agreed to the xcode") || text.contains("xcodebuild -license") {
+            return .xcodeLicence
+        }
+        if text.contains("invalid active developer path")
+            || text.contains("command line tools")
+            || text.contains("xcode-select") {
+            return .commandLineTools
+        }
+        return .unknown
+    }
+
+    // Like runBackend, but keeps what the backend printed to stderr, since that
+    // is the only place the real reason for a failure is ever stated.
+    nonisolated private static func runBackendDiagnosing(_ arguments: [String], scriptDir: String) -> (out: Data?, err: String) {
+        final class Box: @unchecked Sendable { var data = Data() }
+        let process = Process()
+        process.executableURL = pythonExecutableURL
+        process.environment = processEnvironment
+        process.currentDirectoryURL = URL(fileURLWithPath: scriptDir)
+        process.arguments = arguments
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do { try process.run() } catch { return (nil, error.localizedDescription) }
+        // Drain stderr alongside stdout so a chatty failure cannot fill the pipe
+        // and stall the process.
+        let err = Box()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            err.data = errPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        let out = outPipe.fileHandleForReading.readDataToEndOfFile()
+        group.wait()
+        process.waitUntilExit()
+        return (out, String(data: err.data, encoding: .utf8) ?? "")
     }
 
     nonisolated static func prepareCardImage(srcURL: URL, dstURL: URL) -> Bool {
@@ -856,8 +924,10 @@ class AppViewModel: ObservableObject {
         let scriptDir = self.scriptDir
 
         Task.detached {
-            let data = AppViewModel.runBackend(["aircard_backend.py", "--devices"], scriptDir: scriptDir)
-            let response = data.flatMap { try? JSONDecoder().decode(DeviceListResponse.self, from: $0) }
+            let run = AppViewModel.runBackendDiagnosing(["aircard_backend.py", "--devices"], scriptDir: scriptDir)
+            let response = run.out.flatMap { try? JSONDecoder().decode(DeviceListResponse.self, from: $0) }
+            let failure = AppViewModel.diagnoseBackendFailure(run.err)
+            let errorTail = String(run.err.suffix(400))
 
             await MainActor.run {
                 let list = response?.devices ?? []
@@ -870,10 +940,17 @@ class AppViewModel: ObservableObject {
                     if response == nil {
                         // Nothing parseable came back, so the backend did not run.
                         // Saying "no iPhone" sends people to replug a phone that
-                        // was never the problem.
+                        // was never the problem; say what is actually missing.
                         self.statusText = L("status.detection_could_not_run", "Device detection could not run. See the log.")
-                        self.errorMessage = L("error.backend_unavailable", "AirCard could not run its device tools. The app may be damaged or incompletely installed.")
-                        self.log("Device detection returned nothing usable.")
+                        switch failure {
+                        case .xcodeLicence:
+                            self.errorMessage = L("error.xcode_licence", "macOS is holding back a tool AirCard needs until the Xcode licence is accepted. Open Terminal, run \"sudo xcodebuild -license accept\", then click refresh.")
+                        case .commandLineTools:
+                            self.errorMessage = L("error.command_line_tools", "AirCard needs Apple's Command Line Tools. Open Terminal, run \"xcode-select --install\", follow the installer, then click refresh.")
+                        case .unknown:
+                            self.errorMessage = L("error.backend_unavailable", "AirCard could not start its device tools. Reinstalling the app usually fixes this.")
+                        }
+                        self.log("Device detection returned nothing usable. \(errorTail.isEmpty ? "(no error output)" : errorTail)")
                     } else if response?.error == "device_helper_missing" {
                         self.statusText = L("status.device_tools_are_missing_from", "Device tools are missing from this build.")
                         self.log("Bundled device_helper not found — detection cannot run.")
@@ -2392,7 +2469,7 @@ struct ContentView: View {
                     Text(L("ui.aircard", "AirCard"))
                         .font(.title2)
                         .fontWeight(.bold)
-                    Text("v1.2.4")
+                    Text("v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"))
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
