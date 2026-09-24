@@ -210,5 +210,43 @@ class DeviceWatchTests(unittest.TestCase):
         self.assertEqual(out.strip(), "ok")
 
 
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "needs swiftc on macOS")
+class CardNumberPasteTests(unittest.TestCase):
+    """Card numbers pasted by hand, in the shapes people actually paste them."""
+
+    def test_pasted_card_numbers(self):
+        parse = lift(r"(    nonisolated static func parseCardHashes\(.*?\n    \})\n")
+        driver = textwrap.dedent('''
+            import Foundation
+            let h = "M6nDwZrkYbFlsodLgCbvyFZQ1cc="
+            let cases: [(String, [String], Int)] = [
+                (h, [h], 0),
+                ("\\"" + h + "\\"", [h], 0),                                   // quoted
+                ("(" + h + ")", [h], 0),                                       // bracketed
+                ("\\u{201C}" + h + "\\u{201D}", [h], 0),                        // curly quotes
+                (h + ".pkpass", [h], 0),                                       // file name
+                ("/var/mobile/Library/Passes/Cards/" + h + ".pkpass", [h], 0), // full path
+                (h + ".", [h], 0),                                             // end of a sentence
+                (h + ", " + h, [h], 0),                                        // same one twice
+                ("abc", [], 1),                                                // too short
+                ("hello world", [], 2),                                        // not numbers at all
+                ("ab/cd+ef_gh-ijklmnopqrstu=", ["ab/cd+ef_gh-ijklmnopqrstu="], 0), // slash is legal
+            ]
+            var failures: [String] = []
+            for (input, wantValid, wantInvalid) in cases {
+                let got = AppViewModel.parseCardHashes(input)
+                if got.valid != wantValid || got.invalid.count != wantInvalid {
+                    failures.append("\\(input): valid \\(got.valid) invalid \\(got.invalid)")
+                }
+            }
+            if failures.isEmpty { print("ok") } else { print(failures.joined(separator: "\\n")); exit(1) }
+        ''')
+        out = run_swift({
+            "parse.swift": "import Foundation\n\nenum AppViewModel {\n" + parse.replace("nonisolated ", "") + "\n}\n",
+            "main.swift": driver,
+        })
+        self.assertEqual(out.strip(), "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

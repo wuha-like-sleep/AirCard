@@ -49,6 +49,21 @@ class LocalizationTests(unittest.TestCase):
         assert cls.base_path.is_file(), f"missing base strings file: {cls.base_path}"
         cls.base = parse(cls.base_path)
 
+    def test_every_key_the_app_uses_is_in_the_strings_file(self):
+        """A key added in code but never put in en.lproj shows English in every
+        language, and the parity checks above cannot see it: they only compare
+        the strings files with each other."""
+        src = (REPO / "AirCardApp.swift").read_text(encoding="utf-8")
+        used = set(re.findall(r'\bLM?\(\s*"((?:[^"\\]|\\.)*)"\s*,', src))
+        missing = sorted(used - set(self.base))
+        self.assertEqual(missing, [], f"used in AirCardApp.swift but not in en.lproj: {missing}")
+
+    def test_no_key_in_the_strings_file_is_dead(self):
+        src = (REPO / "AirCardApp.swift").read_text(encoding="utf-8")
+        used = set(re.findall(r'\bLM?\(\s*"((?:[^"\\]|\\.)*)"\s*,', src))
+        dead = sorted(set(self.base) - used)
+        self.assertEqual(dead, [], f"in en.lproj but no longer used by the app: {dead}")
+
     def test_base_is_not_empty(self):
         self.assertGreater(len(self.base), 50, "English source looks truncated")
 
@@ -84,7 +99,7 @@ class LocalizationTests(unittest.TestCase):
     # names, format-only strings, and words spelled the same in some languages.
     SAME_AS_ENGLISH_OK = {
         "ui.aircard", "ui.twitter_x", "ui.ok", "ui.zoom", "tab.wallet_cards",
-        "status.step_message", "ui.device_subtitle", "ui.device_with_link",
+        "ui.device_subtitle", "ui.device_with_link",
         "ui.percent", "ui.telephonyui_8_ios_14_15", "ui.telephonyui_9_ios_16_17",
         "ui.telephonyui_10_ios_18", "ui.original_badge",
     }

@@ -494,6 +494,19 @@ def parse_passthm_archive(
             target_dirs = [f"/var/mobile/Library/Caches/{norm_ver}"]
 
         items_dict: dict[str, bytes] = {}
+        # Each output name remembers how good a match its current image was, so
+        # a better source always wins regardless of the order files sit in the
+        # zip: a real key name beats a digit found somewhere in a file name, and
+        # the matching weight beats an unstyled image, which beats the other
+        # weight. Without this, a bold key's art overwrote the regular one (or the
+        # reverse), and Wallpaper@3x.png became key 3.
+        rank: dict[str, int] = {}
+
+        def put(name: str, payload: bytes, score: int) -> None:
+            if score >= rank.get(name, -1):
+                if score > rank.get(name, -1) or name not in items_dict:
+                    items_dict[name] = payload
+                    rank[name] = score
 
         # Normalize target_lang & target_bold
         target_lang = (target_lang or "all").lower().strip()
@@ -504,20 +517,34 @@ def parse_passthm_archive(
             data = z.read(entry)
 
             stem = Path(leaf).stem
+            # Which weight this image was drawn for, before the suffix goes.
+            if re.search(r"-white-bold$", stem, flags=re.IGNORECASE):
+                src_style = "bold"
+            elif re.search(r"-white$", stem, flags=re.IGNORECASE):
+                src_style = "regular"
+            else:
+                src_style = None
             stem_clean = re.sub(r"--?white(?:-bold)?$", "", stem, flags=re.IGNORECASE)
             m = re.search(r"^(?:([a-zA-Z]+)-)?([0-9*#])(?:-([^-\n]+))?", stem_clean)
             digit = None
             subtext = ""
             orig_lang = None
+            exact = False
             if m:
                 orig_lang = m.group(1)
                 digit = m.group(2)
+                exact = True
                 if m.group(3):
                     subtext = m.group(3).strip()
             if not digit:
-                m2 = re.search(r"([0-9*#])", leaf)
-                if m2:
-                    digit = m2.group(1)
+                # Last resort for keys named like key_1.png. A scale suffix is not
+                # a key, and neither is anything that is plainly not a key.
+                loose = re.sub(r"@\d+x$", "", stem, flags=re.IGNORECASE)
+                if not re.search(r"wallpaper|background|cover|preview|thumb|icon|banner|screenshot|poster|\bbg\b",
+                                 loose, flags=re.IGNORECASE):
+                    m2 = re.search(r"([0-9*#])", loose)
+                    if m2:
+                        digit = m2.group(1)
 
             # Strip non-subtext keywords from subtext
             if subtext and subtext.lower() in ("bold", "regular", "white", "black", "light", "dark", "normal"):
@@ -525,7 +552,7 @@ def parse_passthm_archive(
 
             # If user requested universal (all + both), keep raw leaf
             if target_lang == "all" and target_bold == "both":
-                items_dict[leaf] = data
+                put(leaf, data, 100)
 
             if digit:
                 if target_lang == "all":
@@ -549,26 +576,29 @@ def parse_passthm_archive(
 
                 for lang in langs:
                     for bold_suffix in bold_suffixes:
+                        slot = "bold" if bold_suffix else "regular"
+                        style_score = 3 if src_style == slot else (2 if src_style is None else 1)
+                        score = (20 if exact else 10) + style_score
                         # 1. Blank subtext variant (e.g. ru-5---white-bold.png)
-                        items_dict[f"{lang}-{digit}---white{bold_suffix}.png"] = data
+                        put(f"{lang}-{digit}---white{bold_suffix}.png", data, score)
 
                         # 2. Standard Latin subtext (e.g. ru-5-J K L--white-bold.png)
                         if std_subtext:
-                            items_dict[f"{lang}-{digit}-{std_subtext}--white{bold_suffix}.png"] = data
+                            put(f"{lang}-{digit}-{std_subtext}--white{bold_suffix}.png", data, score)
                             if " " in std_subtext:
-                                items_dict[f"{lang}-{digit}-{std_subtext.replace(' ', '')}--white{bold_suffix}.png"] = data
+                                put(f"{lang}-{digit}-{std_subtext.replace(' ', '')}--white{bold_suffix}.png", data, score)
 
                         # 3. Cyrillic subtexts for Russian & Ukrainian
                         if lang in ("ru", "all") and digit in CYRILLIC_SUBTEXTS_RU:
                             cyr_ru = CYRILLIC_SUBTEXTS_RU[digit]
-                            items_dict[f"{lang}-{digit}-{cyr_ru}--white{bold_suffix}.png"] = data
+                            put(f"{lang}-{digit}-{cyr_ru}--white{bold_suffix}.png", data, score)
                         if lang in ("uk", "all") and digit in CYRILLIC_SUBTEXTS_UK:
                             cyr_uk = CYRILLIC_SUBTEXTS_UK[digit]
-                            items_dict[f"{lang}-{digit}-{cyr_uk}--white{bold_suffix}.png"] = data
+                            put(f"{lang}-{digit}-{cyr_uk}--white{bold_suffix}.png", data, score)
 
                         # 4. Custom subtext variant if present in the source asset
                         if subtext:
-                            items_dict[f"{lang}-{digit}-{subtext}--white{bold_suffix}.png"] = data
+                            put(f"{lang}-{digit}-{subtext}--white{bold_suffix}.png", data, score)
 
         res = []
         for tdir in target_dirs:
@@ -577,22 +607,33 @@ def parse_passthm_archive(
         return res
 
 
+def detect_theme_version(names) -> str:
+    """The newest TelephonyUI layout a theme provides.
+
+    The first folder mentioning 9 or 8 used to decide it, so a theme carrying
+    both 10 and 9 (every theme AirCard's own creator exports) read as 9, and on
+    iOS 18 the keypad went where iOS 18 does not look.
+    """
+    found = set()
+    for entry in names:
+        low = entry.lower()
+        for v in ("10", "9", "8"):
+            if f"telephonyui-{v}" in low or f"telephony-{v}" in low:
+                found.add(v)
+    for v in ("10", "9", "8"):
+        if v in found:
+            return f"TelephonyUI-{v}"
+    return "TelephonyUI-10"
+
+
 def cmd_inspect_passthm(passthm_path: str):
     path = Path(passthm_path).expanduser()
     if not path.is_file():
         print(json.dumps({"ok": False, "error": f"File not found: {passthm_path}"}))
         return
     try:
-        detected_ver = "TelephonyUI-10"
         with zipfile.ZipFile(path, "r") as z:
-            for entry in z.namelist():
-                low = entry.lower()
-                if "telephonyui-8" in low or "telephony-8" in low:
-                    detected_ver = "TelephonyUI-8"
-                    break
-                elif "telephonyui-9" in low or "telephony-9" in low:
-                    detected_ver = "TelephonyUI-9"
-                    break
+            detected_ver = detect_theme_version(z.namelist())
 
         items = parse_passthm_archive(str(path), detected_ver)
         if not items:
@@ -632,13 +673,13 @@ def cmd_flash_passthm(
 ) -> bool:
     path = Path(passthm_path).expanduser()
     if not path.is_file():
-        print(json.dumps({"ok": False, "error": "Passcode theme file not found"}))
+        print(json.dumps({"ok": False, "type": "error", "code": "passthm.missing", "error": "Passcode theme file not found", "message": "Passcode theme file not found"}))
         return False
 
     try:
         items_to_write = parse_passthm_archive(str(path), telephony_ver, target_lang, target_bold)
         if not items_to_write:
-            print(json.dumps({"ok": False, "error": "No image assets found in archive"}))
+            print(json.dumps({"ok": False, "type": "error", "code": "passthm.no_images", "error": "No image assets found in archive", "message": "No image assets found in archive"}))
             return False
 
         # Group items by target directory (e.g. /var/mobile/Library/Caches/TelephonyUI-10)
@@ -733,6 +774,7 @@ def cmd_flash_passthm(
                 if failed_leaves:
                     print(json.dumps({
                         "type": "error",
+                        "code": "passthm.write_failed",
                         "message": f"Could not write {len(failed_leaves)} file(s) in {tdir_name}: {', '.join(failed_leaves[:5])}"
                     }))
                     sys.stdout.flush()
@@ -750,7 +792,9 @@ def cmd_flash_passthm(
         return True
 
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        # A line the app can read. {"ok": false, "error": ...} alone was dropped
+        # by the reader, which needs "message", so the reason never surfaced.
+        print(json.dumps({"ok": False, "type": "error", "code": "passthm.failed", "error": str(e), "message": str(e)}))
         return False
 
 

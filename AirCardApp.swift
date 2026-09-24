@@ -584,6 +584,11 @@ class AppViewModel: ObservableObject {
     @Published var originalPreviews: [String: NSImage] = [:]
     // The card whose face is open in the designer, if any.
     @Published var designingCardID: String?
+    // True when the designer is framing one picture for every selected card.
+    @Published var designingAllSelected = false
+    // A picture just picked or dropped, to start a fresh design from. Without
+    // one, the designer reopens the card's existing design.
+    @Published var designerSeed: NSImage?
     // A phone is plugged in but has not trusted this Mac yet.
     @Published var awaitingTrust = false
     // Keeps looking for a phone while none is connected, so nobody has to
@@ -596,6 +601,8 @@ class AppViewModel: ObservableObject {
     // True once a flash has gone quiet long enough that the user deserves to be
     // told, rather than left looking at a bar that is not moving.
     @Published var flashStalled = false
+    // The reason the last passcode flash failed, from the backend's own code.
+    private var passcodeFailure: String?
     // True only while a card flash process is running. Backup, restore and the
     // passcode flash share isFlashing but cannot be cancelled, so a Cancel
     // button shown for them would do nothing.
@@ -888,19 +895,46 @@ class AppViewModel: ObservableObject {
         }
     }
     
-    func addCardHash(_ raw: String) {
-        let components = raw.components(separatedBy: CharacterSet(charactersIn: " \n\r\t,;"))
-        var addedCount = 0
-        for comp in components {
-            let clean = comp.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            if clean.count >= 16 && clean.count <= 64 && !cards.contains(where: { $0.id == clean }) {
-                cards.append(CardItem(id: clean, isSelected: true))
-                addedCount += 1
-                log("Added card: \(clean)")
+    // Pulls card numbers out of whatever was pasted: bare, quoted, bracketed,
+    // with a .pkpass ending, or as a full /Cards/... path. The old version kept
+    // quotes and brackets as part of the number and dropped anything it did
+    // not like without a word.
+    nonisolated static func parseCardHashes(_ raw: String) -> (valid: [String], invalid: [String]) {
+        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;"))
+        let wrappers = CharacterSet(charactersIn: "\"'`\u{201C}\u{201D}\u{2018}\u{2019}()[]{}<>")
+        var valid: [String] = []
+        var invalid: [String] = []
+        for part in raw.components(separatedBy: separators) where !part.isEmpty {
+            var token = part.trimmingCharacters(in: wrappers)
+            if let r = token.range(of: "/Cards/") { token = String(token[r.upperBound...]) }
+            for ext in [".pkpass", ".pkcache", ".cache"] {
+                if let r = token.range(of: ext) { token = String(token[..<r.lowerBound]) }
+            }
+            token = token.trimmingCharacters(in: wrappers.union(CharacterSet(charactersIn: ".")))
+            if token.range(of: "^[A-Za-z0-9+/_=-]{20,44}$", options: .regularExpression) != nil {
+                if !valid.contains(token) { valid.append(token) }
+            } else {
+                invalid.append(part)
             }
         }
-        if addedCount > 0 {
+        return (valid, invalid)
+    }
+
+    func addCardHash(_ raw: String) {
+        let parsed = AppViewModel.parseCardHashes(raw)
+        var added = 0
+        for id in parsed.valid where !cards.contains(where: { $0.id == id }) {
+            cards.append(CardItem(id: id, isSelected: true))
+            added += 1
+            log("Added card: \(id)")
+        }
+        if added > 0 {
             saveCards()
+        }
+        if !parsed.invalid.isEmpty {
+            let shown = parsed.invalid.prefix(5).joined(separator: ", ")
+            log("Not a card number, skipped: \(parsed.invalid.joined(separator: ", "))")
+            errorMessage = String(format: L("error.hashes_not_recognised", "Skipped because they do not look like a card hash: %@. A card hash is 20 to 44 letters and digits, like the ones a scan finds."), shown)
         }
     }
     
@@ -910,6 +944,21 @@ class AppViewModel: ObservableObject {
         log("Removed card: \(id)")
     }
     
+    // Clearing the list cannot be undone from the app, so it asks first.
+    // Saved originals are not touched, and cards that have one come back.
+    func confirmClearAllCards() {
+        guard !cards.isEmpty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L("clear.title", "Remove every card from the list?")
+        alert.informativeText = L("clear.body", "Skins you assigned are forgotten. Saved originals stay on this Mac, and cards that have one come back to the list.")
+        alert.addButton(withTitle: L("clear.confirm", "Remove All"))
+        alert.addButton(withTitle: L("ui.cancel", "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        clearAllCards()
+        loadBackups()
+    }
+
     func clearAllCards() {
         cards.removeAll()
         saveCards()
@@ -937,7 +986,28 @@ class AppViewModel: ObservableObject {
 
     // The designer hands back a finished card face. Write it out the same way a
     // dropped image is, so the flash path treats it like any other skin.
-    func applyCardDesign(_ design: CardFaceDesign, for cardId: String) {
+    // Picking or dropping a picture opens the designer on it rather than
+    // applying a blind centre crop, so framing is part of the normal path and
+    // not something to find in a menu.
+    func openDesigner(for cardId: String, image: NSImage?) {
+        designerSeed = image
+        designingAllSelected = false
+        designingCardID = cardId
+    }
+
+    func openDesignerForAllSelected(image: NSImage) {
+        designerSeed = image
+        designingCardID = nil
+        designingAllSelected = true
+    }
+
+    func closeDesigner() {
+        designingCardID = nil
+        designingAllSelected = false
+        designerSeed = nil
+    }
+
+    func applyCardDesign(_ design: CardFaceDesign, for cardIds: [String]) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aircard_design_\(UUID().uuidString).png")
         guard let image = design.render(),
@@ -948,12 +1018,14 @@ class AppViewModel: ObservableObject {
             errorMessage = L("error.design_save_failed", "The design could not be saved. Try again, or pick a different picture.")
             return
         }
-        setCardImage(for: cardId, url: url)
-        // After setCardImage, which clears it for ordinary image drops.
-        if let idx = cards.firstIndex(where: { $0.id == cardId }) {
-            cards[idx].design = design
+        for cardId in cardIds {
+            setCardImage(for: cardId, url: url)
+            // After setCardImage, which clears it for ordinary image changes.
+            if let idx = cards.firstIndex(where: { $0.id == cardId }) {
+                cards[idx].design = design
+            }
         }
-        log("Designed a card face for: \(cardId.prefix(12))...")
+        log("Designed a card face for \(cardIds.count) card(s).")
     }
 
     func clearCardImage(for cardId: String) {
@@ -1560,8 +1632,11 @@ class AppViewModel: ObservableObject {
         log("Starting skin application for \(selectedCardsWithSkin.count) card(s)...")
         let scriptDir = self.scriptDir
         
+        // Report failures by the number people see on each card, not a hash.
+        let cardNumbers = Dictionary(uniqueKeysWithValues: cards.enumerated().map { ($1.id, $0 + 1) })
         Task.detached {
             var flashFailed = false
+            var notSent: [Int] = []
             let totalCards = Double(selectedCardsWithSkin.count)
             for (idx, card) in selectedCardsWithSkin.enumerated() {
                 guard let imgURL = card.customImageURL else { continue }
@@ -1600,6 +1675,7 @@ class AppViewModel: ObservableObject {
                 let preparedSize = (try? FileManager.default.attributesOfItem(atPath: preparedPath)[.size] as? Int) ?? nil
                 guard (preparedSize ?? 0) > 0 else {
                     flashFailed = true
+                    notSent.append(cardNumbers[card.id] ?? idx + 1)
                     let name = imgURL.lastPathComponent
                     await MainActor.run {
                         self.log("Could not prepare artwork from \(name); skipping this card.")
@@ -1659,7 +1735,12 @@ class AppViewModel: ObservableObject {
                             let currentProgress = (Double(idx) + subProgress) / totalCards
                             self.progress = min(currentProgress, 1.0)
                         }
-                        self.statusText = String(format: L("status.step_message", "[%1$d/%2$d] %3$@"), idx + 1, selectedCardsWithSkin.count, msg)
+                        // The backend's words are English and meant for the log.
+                        if (json["code"] as? String) == "flash.retrying" {
+                            self.statusText = L("status.flash_retrying", "The iPhone was slow to take the files. Trying them one at a time...")
+                        } else if !self.flashStalled {
+                            self.statusText = String(format: L("status.sending_card", "Sending card %1$d of %2$d..."), idx + 1, selectedCardsWithSkin.count)
+                        }
                         self.log("  \(msg)")
                     }
                 }
@@ -1722,11 +1803,16 @@ class AppViewModel: ObservableObject {
                 }
 
                 if flashProcess.terminationStatus != 0 {
+                    let cancelled = await MainActor.run { self.flashCancelled }
+                    if cancelled { break }
+                    // One card failing used to end the run, and every card after
+                    // it was quietly never tried. Carry on and report which.
                     flashFailed = true
+                    notSent.append(cardNumbers[card.id] ?? idx + 1)
                     await MainActor.run {
-                        self.log("Card update failed for \(card.id.prefix(12))...")
+                        self.log("Card update failed for \(card.id.prefix(12))..., carrying on with the rest.")
                     }
-                    break
+                    continue
                 }
                 
                 await MainActor.run {
@@ -1741,9 +1827,16 @@ class AppViewModel: ObservableObject {
                 if self.flashCancelled {
                     self.statusText = L("status.flash_cancelled", "Cancelled. Cards already sent to the iPhone are left as they are.")
                 } else if didFail {
-                    self.statusText = L("status.failed_to_apply_card_skins", "Failed to apply card skins.")
-                    self.errorMessage = L("error.one_or_more_cards_could", "One or more cards could not be updated. Check the log and try again.")
-                    self.log("Skin application stopped after a card update failed.")
+                    let total = selectedCardsWithSkin.count
+                    let list = notSent.sorted().map { "#\($0)" }.joined(separator: ", ")
+                    if notSent.isEmpty {
+                        self.statusText = L("status.failed_to_apply_card_skins", "Failed to apply card skins.")
+                        self.errorMessage = L("error.one_or_more_cards_could", "One or more cards could not be updated. Check the log and try again.")
+                    } else {
+                        self.statusText = String(format: L("status.cards_partly_sent", "Sent %1$d of %2$d. Not sent: %3$@."), total - notSent.count, total, list)
+                        self.errorMessage = String(format: L("error.some_cards_not_sent", "These cards were not sent: %@. Check that the iPhone is still connected and unlocked, then try them again."), list)
+                    }
+                    self.log("Artwork sent for \(total - notSent.count) of \(total) cards; not sent: \(list).")
                 } else {
                     // Nothing on the phone confirms the card actually changed; the
                     // write is sent and the phone does not report back. Say that.
@@ -1800,7 +1893,12 @@ class AppViewModel: ObservableObject {
                 )
                 await MainActor.run {
                     self.loadedPasscodeTheme = themeInfo
-                    self.targetTelephonyVersion = detectedVersion
+                    // The phone's own iOS version decides where the keypad goes. A
+                    // theme only suggests one when there is no phone to ask; letting
+                    // it override sent iOS 18 keypads to a folder iOS 18 ignores.
+                    if self.device?.connected != true {
+                        self.targetTelephonyVersion = detectedVersion
+                    }
                     self.isInspectingTheme = false
                     self.statusText = String(format: L("status.loaded_theme", "Loaded passcode theme '%1$@' (%2$d assets)"), name, fileCount)
                     self.log("Loaded .passthm: \(name) [\(detectedVersion)] with \(fileCount) image assets")
@@ -1814,6 +1912,21 @@ class AppViewModel: ObservableObject {
         }
     }
     
+    static func passcodeFailureMessage(code: String) -> String? {
+        switch code {
+        case "passthm.missing":
+            return L("error.passthm_missing", "The theme file is no longer where it was when you picked it. Choose it again.")
+        case "passthm.no_images":
+            return L("error.passthm_no_images", "This theme file has no keypad images in it, so there is nothing to send.")
+        case "passthm.write_failed":
+            return L("error.passthm_write_failed", "Some keypad files did not reach the iPhone, so the keypad may look mixed. Keep the iPhone unlocked and connected, then send the theme again.")
+        case "passthm.failed":
+            return L("error.keypad_not_sent", "The keypad could not be sent. Check that the iPhone is connected and unlocked, then try again.")
+        default:
+            return nil
+        }
+    }
+
     func flashPasscodeTheme() {
         guard let theme = loadedPasscodeTheme else { return }
         guard let dev = device, dev.connected, let udid = dev.udid else {
@@ -1825,6 +1938,7 @@ class AppViewModel: ObservableObject {
         showLogs = true
         progress = 0.0
         errorMessage = nil
+        passcodeFailure = nil
         statusText = L("status.starting_passcode_theme_flash", "Starting passcode theme flash...")
         log("Flashing passcode theme '\(theme.name)' to device...")
         let scriptDir = self.scriptDir
@@ -1873,11 +1987,17 @@ class AppViewModel: ObservableObject {
                 let step = (json["step"] as? NSNumber)?.doubleValue
                 let total = (json["total"] as? NSNumber)?.doubleValue
                 
+                let kind = json["type"] as? String
+                let code = json["code"] as? String ?? ""
                 await MainActor.run {
                     if let step = step, let total = total, total > 0 {
                         self.progress = min(step / total, 1.0)
+                        self.statusText = String(format: L("status.sending_keypad", "Sending keypad files [%1$d/%2$d]..."), Int(step), Int(total))
                     }
-                    self.statusText = msg
+                    if kind == "error" {
+                        self.passcodeFailure = AppViewModel.passcodeFailureMessage(code: code)
+                    }
+                    // The backend's words stay English, in the log only.
                     self.log("  \(msg)")
                 }
             }
@@ -1924,9 +2044,10 @@ class AppViewModel: ObservableObject {
                     self.showSuccessAlert = true
                     self.log("Passcode theme '\(theme.name)' sent to the iPhone.")
                 } else {
-                    let err = self.errorMessage ?? "Flashing failed (exit code \(exitCode))"
-                    self.statusText = err
-                    self.log("ERROR: \(err)")
+                    self.statusText = L("status.keypad_not_sent", "The keypad could not be sent.")
+                    self.errorMessage = self.passcodeFailure
+                        ?? L("error.keypad_not_sent", "The keypad could not be sent. Check that the iPhone is connected and unlocked, then try again.")
+                    self.log("Passcode flash failed (exit code \(exitCode)).")
                 }
             }
         }
@@ -2082,6 +2203,7 @@ struct WalletCardView: View {
     let hasBackup: Bool
     let busy: Bool
     let onPickImage: () -> Void
+    let onDropImage: (NSImage) -> Void
     let onClearImage: () -> Void
     let onDesign: () -> Void
     let onBackup: () -> Void
@@ -2131,7 +2253,7 @@ struct WalletCardView: View {
                                 Spacer()
                                 HStack {
                                     Spacer()
-                                    Label(L("ui.change_skin", "Change Skin"), systemImage: "photo.badge.arrow.forward")
+                                    Label(L("ui.adjust_skin", "Adjust"), systemImage: "crop")
                                         .font(.caption)
                                         .fontWeight(.semibold)
                                         .padding(.horizontal, 12)
@@ -2244,6 +2366,9 @@ struct WalletCardView: View {
             .onHover { h in isHovered = h }
             .onTapGesture { onPickImage() }
             .onDrop(of: [UTType.fileURL, UTType.image], isTargeted: $isTargeted) { providers in
+                // Hand the picture to the model by card id. Writing it into this
+                // row after an async load could land it on another card if the
+                // list changed in between.
                 guard let provider = providers.first else { return false }
                 if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -2254,38 +2379,16 @@ struct WalletCardView: View {
                             fileURL = url
                         }
                         if let url = fileURL, let img = NSImage(contentsOf: url) {
-                            Task { @MainActor in
-                                card.customImageURL = url
-                                card.design = nil
-                                card.customImage = img
-                                card.isSelected = true
-                            }
+                            Task { @MainActor in onDropImage(img) }
                         }
                     }
                     return true
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                     provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { item, _ in
                         if let url = item as? URL, let img = NSImage(contentsOf: url) {
-                            Task { @MainActor in
-                                card.customImageURL = url
-                                card.design = nil
-                                card.customImage = img
-                                card.isSelected = true
-                            }
+                            Task { @MainActor in onDropImage(img) }
                         } else if let img = item as? NSImage {
-                            let tempURL = FileManager.default.temporaryDirectory
-                                .appendingPathComponent("aircard_drop_\(UUID().uuidString).png")
-                            if let tiff = img.tiffRepresentation,
-                               let rep = NSBitmapImageRep(data: tiff),
-                               let pngData = rep.representation(using: .png, properties: [:]) {
-                                try? pngData.write(to: tempURL)
-                            }
-                            Task { @MainActor in
-                                card.customImageURL = tempURL
-                                card.design = nil
-                                card.customImage = img
-                                card.isSelected = true
-                            }
+                            Task { @MainActor in onDropImage(img) }
                         }
                     }
                     return true
@@ -2464,7 +2567,7 @@ struct CardFaceDesign {
 }
 
 struct CardFaceDesignerView: View {
-    let cardNumber: Int
+    let title: String
     let onApply: (CardFaceDesign) -> Void
     let onCancel: () -> Void
 
@@ -2472,9 +2575,9 @@ struct CardFaceDesignerView: View {
     @State private var dragStart: CGSize = .zero
     @State private var isTargeted = false
 
-    init(cardNumber: Int, initialDesign: CardFaceDesign?, fallbackImage: NSImage?,
+    init(title: String, initialDesign: CardFaceDesign?, fallbackImage: NSImage?,
          onApply: @escaping (CardFaceDesign) -> Void, onCancel: @escaping () -> Void) {
-        self.cardNumber = cardNumber
+        self.title = title
         self.onApply = onApply
         self.onCancel = onCancel
         let start = initialDesign ?? fallbackImage.map { CardFaceDesign(source: $0) }
@@ -2486,7 +2589,7 @@ struct CardFaceDesignerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(String(format: L("designer.title", "Design Card #%d"), cardNumber))
+                Text(title)
                     .font(.headline)
                 Text(L("designer.hint", "Drag to move the picture, use the slider to size it. What you see is what goes on the card."))
                     .font(.caption)
@@ -2698,9 +2801,19 @@ struct ContentView: View {
                                     originalImage: vm.originalPreviews[vm.cards[idx].id],
                                     hasBackup: vm.backedUpCards.contains(vm.cards[idx].id),
                                     busy: vm.isFlashing,
-                                    onPickImage: { openCardImagePicker(for: vm.cards[idx].id) },
+                                    onPickImage: {
+                                        let id = vm.cards[idx].id
+                                        // A card with a skin opens its design to adjust;
+                                        // an empty one asks for a picture first.
+                                        if vm.cards[idx].customImage != nil {
+                                            vm.openDesigner(for: id, image: nil)
+                                        } else {
+                                            openCardImagePicker(for: id)
+                                        }
+                                    },
+                                    onDropImage: { image in vm.openDesigner(for: vm.cards[idx].id, image: image) },
                                     onClearImage: { vm.clearCardImage(for: vm.cards[idx].id) },
-                                    onDesign: { vm.designingCardID = vm.cards[idx].id },
+                                    onDesign: { vm.openDesigner(for: vm.cards[idx].id, image: nil) },
                                     onBackup: { vm.backupCard(id: vm.cards[idx].id) },
                                     onRestore: { vm.restoreCard(id: vm.cards[idx].id) },
                                     onDiscardBackup: { vm.discardBackup(id: vm.cards[idx].id) },
@@ -2733,20 +2846,34 @@ struct ContentView: View {
         }
         .frame(minWidth: 880, minHeight: 680)
         .sheet(isPresented: Binding(
-            get: { vm.designingCardID != nil },
-            set: { if !$0 { vm.designingCardID = nil } }
+            get: { vm.designingCardID != nil || vm.designingAllSelected },
+            set: { if !$0 { vm.closeDesigner() } }
         )) {
-            if let id = vm.designingCardID,
-               let index = vm.cards.firstIndex(where: { $0.id == id }) {
+            if vm.designingAllSelected {
+                let targets = vm.cards.filter(\.isSelected).map(\.id)
                 CardFaceDesignerView(
-                    cardNumber: index + 1,
-                    initialDesign: vm.cards[index].design,
-                    fallbackImage: vm.cards[index].customImage,
+                    title: L("designer.title_all", "Design for All Selected Cards"),
+                    initialDesign: nil,
+                    fallbackImage: vm.designerSeed,
                     onApply: { design in
-                        vm.applyCardDesign(design, for: id)
-                        vm.designingCardID = nil
+                        vm.applyCardDesign(design, for: targets)
+                        vm.closeDesigner()
                     },
-                    onCancel: { vm.designingCardID = nil }
+                    onCancel: { vm.closeDesigner() }
+                )
+            } else if let id = vm.designingCardID,
+                      let index = vm.cards.firstIndex(where: { $0.id == id }) {
+                CardFaceDesignerView(
+                    title: String(format: L("designer.title", "Design Card #%d"), index + 1),
+                    // A freshly picked picture starts a new design; otherwise pick
+                    // up the card's existing one where it was left.
+                    initialDesign: vm.designerSeed == nil ? vm.cards[index].design : nil,
+                    fallbackImage: vm.designerSeed ?? vm.cards[index].customImage,
+                    onApply: { design in
+                        vm.applyCardDesign(design, for: [id])
+                        vm.closeDesigner()
+                    },
+                    onCancel: { vm.closeDesigner() }
                 )
             }
         }
@@ -2968,7 +3095,7 @@ struct ContentView: View {
                     Text("·").foregroundColor(.secondary)
                     
                     Button(L("ui.clear_all", "Clear All")) {
-                        vm.clearAllCards()
+                        vm.confirmClearAllCards()
                     }
                     .buttonStyle(.link)
                     .font(.caption)
@@ -3009,52 +3136,99 @@ struct ContentView: View {
         .background(Color.blue.opacity(0.1))
     }
     
+    // The first screen a new user sees. It used to open with "click Scan
+    // Cards", which is disabled until a phone is connected, and never said to
+    // connect one. It now follows where the person actually is.
+    private var setupStep: Int {
+        if vm.device?.connected != true { return 0 }
+        if !vm.isScanningCards { return 1 }
+        return 2
+    }
+
+    private func setupRow(_ index: Int, _ title: Text, detail: Text? = nil) -> some View {
+        let done = index < setupStep
+        let current = index == setupStep
+        return HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(done ? Color.green : (current ? Color.accentColor : Color.secondary.opacity(0.25)))
+                    .frame(width: 22, height: 22)
+                if done {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                } else {
+                    Text("\(index + 1)")
+                        .font(.caption.bold())
+                        .foregroundColor(current ? .white : .secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                title
+                    .foregroundColor(current ? .primary : .secondary)
+                    .fontWeight(current ? .semibold : .regular)
+                if current, let detail {
+                    detail
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .opacity(done ? 0.6 : 1)
+        // Done, current and waiting are told apart by colour and icon on screen;
+        // say it in words for VoiceOver.
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(done ? L("onboard.a11y_done", "Done")
+                            : (current ? L("onboard.a11y_current", "Next step") : L("onboard.a11y_waiting", "Not yet")))
+    }
+
     private var emptyStateView: some View {
         VStack(spacing: 18) {
             Image(systemName: "creditcard.viewfinder")
                 .font(.system(size: 54))
                 .foregroundColor(.accentColor.opacity(0.8))
-            
+
             Text(L("ui.no_cards_detected_yet", "No Cards Detected Yet"))
                 .font(.title3)
                 .fontWeight(.bold)
-            
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 10) {
-                    Text("1.")
-                        .fontWeight(.bold)
-                        .foregroundColor(.accentColor)
-                    Text(LM("ui.click_scan_cards_in_the", "Click **Scan Cards** in the toolbar above."))
-                }
-                HStack(alignment: .top, spacing: 10) {
-                    Text("2.")
-                        .fontWeight(.bold)
-                        .foregroundColor(.accentColor)
-                    Text(LM("ui.on_your_iphone_double_click", "On your iPhone, **double-click the Side button** (Apple Pay), authenticate with **Face ID**, and **tap your card**."))
-                }
-                HStack(alignment: .top, spacing: 10) {
-                    Text("3.")
-                        .fontWeight(.bold)
-                        .foregroundColor(.accentColor)
-                    Text(L("ui.your_card_will_be_detected", "Your card will be detected immediately!"))
-                }
+
+            VStack(alignment: .leading, spacing: 12) {
+                setupRow(0, Text(L("onboard.connect", "Connect your iPhone with a cable")),
+                         detail: Text(vm.awaitingTrust
+                            ? L("onboard.connect_trust", "Unlock the iPhone and tap Trust.")
+                            : L("onboard.connect_detail", "Use a cable that carries data. If your Mac asks whether to allow the accessory, click Allow.")))
+                setupRow(1, Text(LM("onboard.scan", "Click **Start Scanning** below.")))
+                setupRow(2, Text(LM("ui.on_your_iphone_double_click", "On your iPhone, **double-click the Side button** (Apple Pay), authenticate with **Face ID**, and **tap your card**.")))
+                setupRow(3, Text(L("ui.your_card_will_be_detected", "Your card will be detected immediately!")))
             }
             .font(.subheadline)
-            .foregroundColor(.secondary)
-            .frame(maxWidth: 460)
+            .frame(maxWidth: 480)
             .padding(20)
             .background(Color(NSColor.controlBackgroundColor))
             .cornerRadius(12)
-            
+
             HStack(spacing: 12) {
-                Button(action: { vm.startCardScanning() }) {
-                    Label(L("ui.start_scanning", "Start Scanning"), systemImage: "wave.3.forward.circle.fill")
-                        .fontWeight(.semibold)
+                if vm.device?.connected != true {
+                    // The app keeps looking on its own, so there is nothing to
+                    // press here; say that it is looking.
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(L("onboard.looking", "Looking for your iPhone..."))
+                            .foregroundColor(.secondary)
+                    }
+                } else {
+                    Button(action: { vm.toggleCardScanning() }) {
+                        Label(vm.isScanningCards ? L("ui.stop_scanning", "Stop Scanning") : L("ui.start_scanning", "Start Scanning"),
+                              systemImage: vm.isScanningCards ? "stop.circle.fill" : "wave.3.forward.circle.fill")
+                            .fontWeight(.semibold)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(vm.isScanningCards ? .red : .accentColor)
+                    .controlSize(.regular)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .disabled(vm.device?.connected != true)
-                
+
                 Button(L("ui.add_hashes_manually", "Add Hashes Manually")) {
                     vm.showAddCardSheet = true
                 }
@@ -4426,7 +4600,11 @@ struct ContentView: View {
         panel.canChooseDirectories = false
         panel.message = String(format: L("panel.choose_skin_for_card", "Choose a custom skin for card %@..."), String(cardId.prefix(12)))
         if panel.runModal() == .OK, let url = panel.url {
-            vm.setCardImage(for: cardId, url: url)
+            if let image = NSImage(contentsOf: url) {
+                vm.openDesigner(for: cardId, image: image)
+            } else {
+                vm.errorMessage = L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG.")
+            }
         }
     }
     
@@ -4437,8 +4615,10 @@ struct ContentView: View {
         panel.canChooseDirectories = false
         panel.message = L("panel.choose_skin_all", "Choose a skin to assign to all selected cards...")
         if panel.runModal() == .OK, let url = panel.url {
-            for card in vm.cards where card.isSelected {
-                vm.setCardImage(for: card.id, url: url)
+            if let image = NSImage(contentsOf: url) {
+                vm.openDesignerForAllSelected(image: image)
+            } else {
+                vm.errorMessage = L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG.")
             }
         }
     }
