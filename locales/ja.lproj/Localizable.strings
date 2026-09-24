@@ -74,9 +74,13 @@
 "status.loaded_into_creator" = "「%1$@」をテーマ作成に読み込みました（%2$d個のキーを編集できます）";
 "status.loaded_theme" = "パスコードテーマ「%1$@」を読み込みました（アセット%2$d個）";
 "status.no_iphone_allow_accessory" = "iPhoneが見つかりません。充電専用ではなく、データ通信に対応したケーブルを使用してください。Macに「アクセサリの接続を許可しますか？」と表示された場合は、「許可」をクリックしてください。";
+"status.originals_read" = "%2$d枚中%1$d枚の元のアートワークを読み取りました。";
+"status.originals_read_some_changed" = "%2$d枚中%1$d枚の元のアートワークを読み取りました。残りのカードはAirCardによってすでにデザインが変更されているため、元のアートワークはiPhoneに残っていません。";
+"status.originals_read_some_failed" = "%2$d枚中%1$d枚の元のアートワークを読み取りました。残りのカードは、iPhoneのロックを解除した状態でやり直してください。";
 "status.passcode_sent" = "iPhoneに送信しました。新しいキーパッドを確認するには、iPhoneをロックしてください。";
 "status.poster_image_loaded_ready_to" = "ポスター画像を読み込みました・位置を調整して分割できます";
 "status.preparing_skin" = "[%1$d/%2$d] %3$@のスキンを準備しています...";
+"status.reading_originals" = "元のアートワークを読み取っています（%1$d/%2$d）...";
 "status.ready" = "準備完了";
 "status.restore_failed" = "カードを復元できませんでした";
 "status.restored" = "カードを復元しました。Walletアプリを強制終了すると反映されます。";
@@ -174,6 +178,7 @@
 "ui.no_passthm_loaded_select_a" = ".passthm未読み込み・書き込むテーマパッケージを選択してください";
 "ui.ok" = "OK";
 "ui.on_your_iphone_double_click" = "iPhoneで**サイドボタンをダブルクリック**して（Apple Pay）、**Face ID**で認証し、**カードをタップ**します。";
+"ui.original_badge" = "オリジナル";
 "ui.original_saved" = "元のアートワーク保存済み";
 "ui.passcode_sent" = "パスコードテーマをiPhoneに送信しました。\n\n新しいキーパッドを表示するには、iPhoneをロックするか再起動してください。";
 "ui.passcode_theme_file" = "パスコードテーマファイル";
@@ -182,6 +187,8 @@
 "ui.paste_one_or_more_card" = "カードハッシュを1つ以上ペーストしてください（スペース、カンマ、改行で区切ります）：";
 "ui.percent" = "%d%%";
 "ui.poster_artwork" = "ポスターのアートワーク";
+"ui.read_originals" = "元のアートワークを読み取る";
+"ui.read_originals_help" = "各カードの現在のアートワークを表示し、コピーを保存してあとで復元できるようにします";
 "ui.refresh_device_connection" = "デバイスの接続を再確認";
 "ui.remove" = "削除";
 "ui.remove_from_list" = "リストから削除";

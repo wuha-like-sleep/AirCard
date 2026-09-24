@@ -74,9 +74,13 @@
 "status.loaded_into_creator" = "已将“%1$@”载入主题创作（%2$d 个按键可编辑）";
 "status.loaded_theme" = "已载入密码主题“%1$@”（%2$d 个素材）";
 "status.no_iphone_allow_accessory" = "未找到 iPhone。请使用可传输数据的连接线，而不是仅能充电的线。如果 Mac 询问是否允许配件连接，请点按“允许”。";
+"status.originals_read" = "原始图像已读取：%2$d 张中的 %1$d 张。";
+"status.originals_read_some_changed" = "原始图像已读取：%2$d 张中的 %1$d 张。其余卡片此前已由 AirCard 更改过，因此 iPhone 上已没有它们的原始图像。";
+"status.originals_read_some_failed" = "原始图像已读取：%2$d 张中的 %1$d 张。请解锁 iPhone 后重试其余卡片。";
 "status.passcode_sent" = "已发送到你的 iPhone。锁定 iPhone 即可看到新的密码键盘。";
 "status.poster_image_loaded_ready_to" = "海报图片已载入 · 可以取景并切分";
 "status.preparing_skin" = "[%1$d/%2$d] 正在准备 %3$@ 的皮肤…";
+"status.reading_originals" = "[%1$d/%2$d] 正在读取原始图像…";
 "status.ready" = "就绪";
 "status.restore_failed" = "卡片恢复失败。";
 "status.restored" = "卡片已恢复。强制退出“钱包”App 即可看到。";
@@ -174,6 +178,7 @@
 "ui.no_passthm_loaded_select_a" = "未载入 .passthm · 请选择要刷入的主题包";
 "ui.ok" = "好";
 "ui.on_your_iphone_double_click" = "在 iPhone 上**连按两下侧边按钮**（Apple Pay），用**面容 ID** 验证，然后**轻点你的卡片**。";
+"ui.original_badge" = "原图";
 "ui.original_saved" = "原始图像已存储";
 "ui.passcode_sent" = "密码主题已发送到你的 iPhone。\n\n锁定 iPhone（或重新启动）即可看到新的密码键盘。";
 "ui.passcode_theme_file" = "密码主题文件";
@@ -182,6 +187,8 @@
 "ui.paste_one_or_more_card" = "粘贴一个或多个卡片哈希（用空格、逗号或换行分隔）：";
 "ui.percent" = "%d%%";
 "ui.poster_artwork" = "海报图像";
+"ui.read_originals" = "读取原始图像";
+"ui.read_originals_help" = "显示每张卡片现在的样子，并存储一份原始图像，以后可随时恢复";
 "ui.refresh_device_connection" = "刷新设备连接";
 "ui.remove" = "移除";
 "ui.remove_from_list" = "从列表中移除";

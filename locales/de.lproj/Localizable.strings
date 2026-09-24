@@ -74,9 +74,13 @@
 "status.loaded_into_creator" = "„%1$@“ in den Design-Editor geladen (%2$d Tasten bereit zum Bearbeiten)";
 "status.loaded_theme" = "Code-Design „%1$@“ geladen (%2$d Grafiken)";
 "status.no_iphone_allow_accessory" = "Kein iPhone gefunden. Verwende ein Kabel, das auch Daten überträgt, kein reines Ladekabel. Wenn dein Mac fragt, ob das Zubehör verbunden werden darf, klicke auf „Erlauben“.";
+"status.originals_read" = "Originalgrafiken gelesen: %1$d von %2$d.";
+"status.originals_read_some_changed" = "Originalgrafiken gelesen: %1$d von %2$d. Bei den übrigen Karten hat AirCard das Design bereits geändert, daher ist ihr Original nicht mehr auf dem iPhone.";
+"status.originals_read_some_failed" = "Originalgrafiken gelesen: %1$d von %2$d. Entsperre das iPhone und versuche es für die übrigen Karten erneut.";
 "status.passcode_sent" = "An dein iPhone gesendet. Sperre es, um das neue Code-Tastenfeld zu sehen.";
 "status.poster_image_loaded_ready_to" = "Posterbild geladen · Bereit zum Ausrichten und Zerlegen";
 "status.preparing_skin" = "[%1$d/%2$d] Skin für %3$@ wird vorbereitet …";
+"status.reading_originals" = "Originalgrafiken werden gelesen [%1$d/%2$d] …";
 "status.ready" = "Bereit";
 "status.restore_failed" = "Karte konnte nicht wiederhergestellt werden";
 "status.restored" = "Karte wiederhergestellt. Beende die Wallet-App vollständig, um die Karte zu sehen.";
@@ -174,6 +178,7 @@
 "ui.no_passthm_loaded_select_a" = "Keine .passthm geladen · Wähle ein Design-Paket zum Aufspielen";
 "ui.ok" = "OK";
 "ui.on_your_iphone_double_click" = "Drücke auf deinem iPhone **zweimal die Seitentaste** (Apple Pay), bestätige mit **Face ID** und **tippe auf deine Karte**.";
+"ui.original_badge" = "Original";
 "ui.original_saved" = "Originalgrafik ist gesichert";
 "ui.passcode_sent" = "Das Code-Design wurde an dein iPhone gesendet.\n\nSperre das iPhone oder starte es neu, um das neue Code-Tastenfeld zu sehen.";
 "ui.passcode_theme_file" = "Code-Design-Datei";
@@ -182,6 +187,8 @@
 "ui.paste_one_or_more_card" = "Füge einen oder mehrere Karten-Hashes ein (getrennt durch Leerzeichen, Kommas oder Zeilenumbrüche):";
 "ui.percent" = "%d %%";
 "ui.poster_artwork" = "Postergrafik";
+"ui.read_originals" = "Originalgrafiken lesen";
+"ui.read_originals_help" = "Jede Karte so zeigen, wie sie gerade aussieht, und ihre Originalgrafik sichern, um sie später wiederherzustellen";
 "ui.refresh_device_connection" = "Geräteverbindung aktualisieren";
 "ui.remove" = "Entfernen";
 "ui.remove_from_list" = "Aus der Liste entfernen";

@@ -236,5 +236,23 @@ class FlashMarksCardTests(_TempBackups):
         self.assertTrue(aircard.card_was_flashed(UDID, CARD))
 
 
+class OriginalPreviewTests(_TempBackups):
+    def test_the_saved_original_can_be_shown(self):
+        aircard.save_card_backup(UDID, CARD, complete())
+        path = aircard.backup_preview_path(UDID, CARD)
+        self.assertIsNotNone(path)
+        self.assertEqual(path.name, "cardBackgroundCombined@3x.png")
+
+    def test_no_preview_without_a_complete_backup(self):
+        self.assertIsNone(aircard.backup_preview_path(UDID, CARD))
+
+    def test_backups_command_reports_where_each_original_is(self):
+        aircard.save_card_backup(UDID, CARD, complete())
+        _, events = self._events(aircard_backend.cmd_backups, UDID)
+        out = events[-1]
+        self.assertEqual(out["cards"], [CARD])
+        self.assertTrue(out["previews"][CARD].endswith("cardBackgroundCombined@3x.png"))
+
+
 if __name__ == "__main__":
     unittest.main()

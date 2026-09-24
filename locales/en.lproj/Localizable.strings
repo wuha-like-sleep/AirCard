@@ -74,9 +74,13 @@
 "status.loaded_into_creator" = "Loaded '%1$@' into Theme Creator (%2$d keys ready to edit)";
 "status.loaded_theme" = "Loaded passcode theme '%1$@' (%2$d assets)";
 "status.no_iphone_allow_accessory" = "No iPhone found. Use a cable that carries data, not a charge-only one. If your Mac asks whether to allow the accessory to connect, click Allow.";
+"status.originals_read" = "Originals read: %1$d of %2$d.";
+"status.originals_read_some_changed" = "Originals read: %1$d of %2$d. The rest were already changed by AirCard, so their originals are not on the phone.";
+"status.originals_read_some_failed" = "Originals read: %1$d of %2$d. Unlock the iPhone and try again for the rest.";
 "status.passcode_sent" = "Sent to your iPhone. Lock it to see the new keypad.";
 "status.poster_image_loaded_ready_to" = "Poster image loaded · Ready to frame and slice";
 "status.preparing_skin" = "[%1$d/%2$d] Preparing skin for %3$@...";
+"status.reading_originals" = "Reading original designs [%1$d/%2$d]...";
 "status.ready" = "Ready";
 "status.restore_failed" = "Could not restore the card";
 "status.restored" = "Card restored. Force-close Wallet to see it.";
@@ -174,6 +178,7 @@
 "ui.no_passthm_loaded_select_a" = "No .passthm loaded · Select a theme package to flash";
 "ui.ok" = "OK";
 "ui.on_your_iphone_double_click" = "On your iPhone, **double-click the Side button** (Apple Pay), authenticate with **Face ID**, and **tap your card**.";
+"ui.original_badge" = "Original";
 "ui.original_saved" = "Original artwork is saved";
 "ui.passcode_sent" = "The passcode theme was sent to your iPhone.\n\nLock the iPhone, or restart it, to see the new keypad.";
 "ui.passcode_theme_file" = "Passcode Theme File";
@@ -182,6 +187,8 @@
 "ui.paste_one_or_more_card" = "Paste one or more card hashes (separated by spaces, commas, or newlines):";
 "ui.percent" = "%d%%";
 "ui.poster_artwork" = "Poster Artwork";
+"ui.read_originals" = "Read Original Designs";
+"ui.read_originals_help" = "Show each card as it is now, and keep a copy so it can be put back later";
 "ui.refresh_device_connection" = "Refresh device connection";
 "ui.remove" = "Remove";
 "ui.remove_from_list" = "Remove from list";

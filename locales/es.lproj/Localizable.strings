@@ -74,9 +74,13 @@
 "status.loaded_into_creator" = "«%1$@» cargado en el creador de temas (%2$d teclas listas para editar)";
 "status.loaded_theme" = "Tema de código «%1$@» cargado (%2$d recursos)";
 "status.no_iphone_allow_accessory" = "No se ha detectado ningún iPhone. Usa un cable que transmita datos, no uno que solo sirva para cargar. Si el Mac te pregunta si quieres permitir que el accesorio se conecte, haz clic en Permitir.";
+"status.originals_read" = "Imágenes originales leídas: %1$d de %2$d.";
+"status.originals_read_some_changed" = "Imágenes originales leídas: %1$d de %2$d. AirCard ya había cambiado las demás, así que sus imágenes originales no están en el iPhone.";
+"status.originals_read_some_failed" = "Imágenes originales leídas: %1$d de %2$d. Desbloquea el iPhone e inténtalo de nuevo para leer las demás.";
 "status.passcode_sent" = "Enviado al iPhone. Bloquéalo para ver el nuevo teclado del código.";
 "status.poster_image_loaded_ready_to" = "Póster cargado · Listo para encuadrar y recortar";
 "status.preparing_skin" = "[%1$d/%2$d] Preparando el diseño de %3$@…";
+"status.reading_originals" = "Leyendo imágenes originales [%1$d/%2$d]…";
 "status.ready" = "Listo";
 "status.restore_failed" = "No se ha podido restaurar la tarjeta";
 "status.restored" = "Tarjeta restaurada. Fuerza el cierre de Wallet para verla.";
@@ -174,6 +178,7 @@
 "ui.no_passthm_loaded_select_a" = "Ningún .passthm cargado · Selecciona un paquete de tema para aplicarlo";
 "ui.ok" = "OK";
 "ui.on_your_iphone_double_click" = "En el iPhone, **pulsa dos veces el botón lateral** (Apple Pay), autentícate con **Face ID** y **toca la tarjeta**.";
+"ui.original_badge" = "Original";
 "ui.original_saved" = "Hay una imagen original guardada";
 "ui.passcode_sent" = "El tema de código se ha enviado al iPhone.\n\nBloquea el iPhone o reinícialo para ver el nuevo teclado del código.";
 "ui.passcode_theme_file" = "Archivo de tema de código";
@@ -182,6 +187,8 @@
 "ui.paste_one_or_more_card" = "Pega uno o más hashes de tarjeta (separados por espacios, comas o saltos de línea):";
 "ui.percent" = "%d %%";
 "ui.poster_artwork" = "Imagen del póster";
+"ui.read_originals" = "Leer imágenes originales";
+"ui.read_originals_help" = "Mostrar cada tarjeta tal como está ahora y guardar una copia para poder restaurarla después";
 "ui.refresh_device_connection" = "Actualizar la conexión del dispositivo";
 "ui.remove" = "Quitar";
 "ui.remove_from_list" = "Quitar de la lista";

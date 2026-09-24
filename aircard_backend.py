@@ -58,6 +58,7 @@ from aircard import (
     has_card_backup,
     list_backed_up_cards,
     BACKED_UP_ASSETS,
+    backup_preview_path,
     card_was_flashed,
     discard_card_backup,
     list_connected_devices,
@@ -241,8 +242,14 @@ def cmd_discard_backup(udid: str, card_hash: str) -> bool:
 
 
 def cmd_backups(udid: str):
-    """Which cards on this device still have their original artwork saved."""
-    print(json.dumps({"ok": True, "cards": list_backed_up_cards(udid)}))
+    """Which cards on this device have their original saved, and where to see it."""
+    cards = list_backed_up_cards(udid)
+    previews = {}
+    for card in cards:
+        path = backup_preview_path(udid, card)
+        if path:
+            previews[card] = str(path)
+    print(json.dumps({"ok": True, "cards": cards, "previews": previews}))
 
 
 def cmd_get_saved_cards():

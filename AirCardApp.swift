@@ -34,6 +34,8 @@ struct DeviceInfo: Codable {
 struct SavedCardsResponse: Codable {
     var ok: Bool
     var cards: [String]?
+    // Card hash to the saved original's image, for showing the card as it is.
+    var previews: [String: String]?
 }
 
 struct DeviceListResponse: Codable {
@@ -578,6 +580,8 @@ class AppViewModel: ObservableObject {
     @Published var devices: [DeviceInfo] = []
     // Cards whose original artwork is saved on this Mac, so restore is real.
     @Published var backedUpCards: Set<String> = []
+    // The card as it looked before any skin, from its saved original.
+    @Published var originalPreviews: [String: NSImage] = [:]
     // The card whose face is open in the designer, if any.
     @Published var designingCardID: String?
     // A phone is plugged in but has not trusted this Mac yet.
@@ -1144,15 +1148,21 @@ class AppViewModel: ObservableObject {
     func loadBackups() {
         guard let udid = device?.udid else {
             backedUpCards = []
+            originalPreviews = [:]
             return
         }
         let scriptDir = self.scriptDir
         Task.detached {
             let data = AppViewModel.runBackend(["aircard_backend.py", "--backups", udid], scriptDir: scriptDir)
             let list = data.flatMap { try? JSONDecoder().decode(SavedCardsResponse.self, from: $0) }
+            var previews: [String: NSImage] = [:]
+            for (card, path) in list?.previews ?? [:] {
+                if let image = NSImage(contentsOfFile: path) { previews[card] = image }
+            }
             await MainActor.run {
                 let saved = list?.cards ?? []
                 self.backedUpCards = Set(saved)
+                self.originalPreviews = previews
                 // A card can only be restored from its row. If it was removed from
                 // the list, or the list was cleared, its saved original would sit
                 // on disk with no way to reach it, so put the row back.
@@ -1248,6 +1258,48 @@ class AppViewModel: ObservableObject {
                 } else {
                     self.errorMessage = AppViewModel.originalArtworkMessage(code: "backup.discard_failed")
                 }
+                self.loadBackups()
+            }
+        }
+    }
+
+    // Reads, saves and so shows the original of every card that has none yet.
+    // It is a button rather than something a scan does on its own: reading a
+    // card's artwork moves the file off the card and puts it back, and that is
+    // worth doing when the person asks, not quietly for every card found.
+    func readAllOriginals() {
+        guard let udid = device?.udid, !isFlashing, !isScanningCards else { return }
+        let todo = cards.map(\.id).filter { !backedUpCards.contains($0) }
+        guard !todo.isEmpty else { return }
+        errorMessage = nil
+        isFlashing = true
+        showLogs = true
+        progress = 0
+        let scriptDir = self.scriptDir
+        Task.detached {
+            var read = 0, alreadyChanged = 0, failed = 0
+            for (i, id) in todo.enumerated() {
+                await MainActor.run {
+                    self.statusText = String(format: L("status.reading_originals", "Reading original designs [%1$d/%2$d]..."), i + 1, todo.count)
+                    self.progress = Double(i) / Double(todo.count)
+                }
+                let data = AppViewModel.runBackend(["aircard_backend.py", "--backup", udid, id], scriptDir: scriptDir)
+                let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                if text.contains("\"backup.done\"") || text.contains("\"backup.exists\"") { read += 1 }
+                else if text.contains("\"backup.already_changed\"") { alreadyChanged += 1 }
+                else { failed += 1 }
+            }
+            await MainActor.run {
+                self.isFlashing = false
+                self.progress = 0
+                if alreadyChanged > 0 {
+                    self.statusText = String(format: L("status.originals_read_some_changed", "Originals read: %1$d of %2$d. The rest were already changed by AirCard, so their originals are not on the phone."), read, todo.count)
+                } else if failed > 0 {
+                    self.statusText = String(format: L("status.originals_read_some_failed", "Originals read: %1$d of %2$d. Unlock the iPhone and try again for the rest."), read, todo.count)
+                } else {
+                    self.statusText = String(format: L("status.originals_read", "Originals read: %1$d of %2$d."), read, todo.count)
+                }
+                self.log("Read originals: \(read) read, \(alreadyChanged) already changed, \(failed) failed.")
                 self.loadBackups()
             }
         }
@@ -2026,6 +2078,7 @@ class AppViewModel: ObservableObject {
 struct WalletCardView: View {
     @Binding var card: CardItem
     let cardIndex: Int
+    let originalImage: NSImage?
     let hasBackup: Bool
     let busy: Bool
     let onPickImage: () -> Void
@@ -2092,6 +2145,43 @@ struct WalletCardView: View {
                             }
                         }
                     }
+                } else if let original = originalImage {
+                    // The card as it is on the phone, from its saved original,
+                    // so people can see what they are about to replace.
+                    ZStack(alignment: .topLeading) {
+                        Image(nsImage: original)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 290, height: 182)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                        Text(L("ui.original_badge", "Original"))
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(10)
+
+                        if isHovered || isTargeted {
+                            ZStack {
+                                Color.black.opacity(0.35)
+                                VStack(spacing: 6) {
+                                    Image(systemName: "photo.badge.plus")
+                                        .font(.system(size: 26))
+                                    Text(isTargeted ? L("ui.drop_image_here", "Drop image here") : L("ui.assign_card_skin", "Assign Card Skin"))
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.white)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(isTargeted ? Color.accentColor : Color.clear, lineWidth: 2)
+                    )
                 } else {
                     // Empty / Placeholder Card Mockup
                     ZStack {
@@ -2605,6 +2695,7 @@ struct ContentView: View {
                                 WalletCardView(
                                     card: $vm.cards[idx],
                                     cardIndex: idx,
+                                    originalImage: vm.originalPreviews[vm.cards[idx].id],
                                     hasBackup: vm.backedUpCards.contains(vm.cards[idx].id),
                                     busy: vm.isFlashing,
                                     onPickImage: { openCardImagePicker(for: vm.cards[idx].id) },
@@ -2832,6 +2923,15 @@ struct ContentView: View {
             .controlSize(.regular)
             .disabled(vm.device?.connected != true)
             
+            Button(action: { vm.readAllOriginals() }) {
+                Label(L("ui.read_originals", "Read Original Designs"), systemImage: "eye")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(vm.device?.connected != true || vm.isFlashing || vm.isScanningCards
+                      || !vm.cards.contains { !vm.backedUpCards.contains($0.id) })
+            .help(L("ui.read_originals_help", "Show each card as it is now, and keep a copy so it can be put back later"))
+
             Button(action: { vm.showAddCardSheet = true }) {
                 Label(L("ui.add_manually", "Add Manually"), systemImage: "plus")
             }

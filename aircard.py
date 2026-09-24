@@ -190,6 +190,17 @@ def read_card_backup(udid: str, card_hash: str) -> list[tuple[str, bytes]]:
     return out
 
 
+def backup_preview_path(udid: str, card_hash: str) -> "Path | None":
+    """The largest saved image of the original, for showing the card as it was."""
+    if not has_card_backup(udid, card_hash):
+        return None
+    for name in ("cardBackgroundCombined@3x.png", "cardBackgroundCombined@2x.png"):
+        p = card_backup_dir(udid, card_hash) / name
+        if p.is_file() and p.stat().st_size > 0:
+            return p
+    return None
+
+
 def list_backed_up_cards(udid: str) -> list[str]:
     """Card hashes on this device that can be restored."""
     from urllib.parse import unquote

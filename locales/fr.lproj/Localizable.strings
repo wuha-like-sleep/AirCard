@@ -74,9 +74,13 @@
 "status.loaded_into_creator" = "« %1$@ » ouvert dans le Créateur de thèmes (%2$d touches modifiables)";
 "status.loaded_theme" = "Thème de code « %1$@ » chargé (%2$d éléments)";
 "status.no_iphone_allow_accessory" = "Aucun iPhone détecté. Utilisez un câble qui transfère les données, pas un simple câble de charge. Si votre Mac vous demande d'autoriser l'accessoire à se connecter, cliquez sur Autoriser.";
+"status.originals_read" = "Illustrations d'origine lues : %1$d sur %2$d.";
+"status.originals_read_some_changed" = "Illustrations d'origine lues : %1$d sur %2$d. Les autres cartes avaient déjà été modifiées par AirCard : leur illustration d'origine n'est donc plus sur l'iPhone.";
+"status.originals_read_some_failed" = "Illustrations d'origine lues : %1$d sur %2$d. Pour les autres, réessayez avec l'iPhone déverrouillé.";
 "status.passcode_sent" = "Thème envoyé à votre iPhone. Verrouillez-le pour voir le nouveau clavier.";
 "status.poster_image_loaded_ready_to" = "Affiche chargée · Prête à cadrer et à découper";
 "status.preparing_skin" = "[%1$d/%2$d] Préparation de l'habillage de %3$@…";
+"status.reading_originals" = "Lecture des illustrations d'origine [%1$d/%2$d]…";
 "status.ready" = "Prêt";
 "status.restore_failed" = "Impossible de restaurer la carte";
 "status.restored" = "Carte restaurée. Forcez la fermeture de Wallet pour la voir.";
@@ -174,6 +178,7 @@
 "ui.no_passthm_loaded_select_a" = "Aucun .passthm chargé · Sélectionnez un thème à installer";
 "ui.ok" = "OK";
 "ui.on_your_iphone_double_click" = "Sur votre iPhone, **double-cliquez sur le bouton latéral** (Apple Pay), validez avec **Face ID**, puis **touchez votre carte**.";
+"ui.original_badge" = "D'origine";
 "ui.original_saved" = "Illustration d'origine enregistrée";
 "ui.passcode_sent" = "Le thème de code a été envoyé à votre iPhone.\n\nVerrouillez l'iPhone ou redémarrez-le pour voir le nouveau clavier.";
 "ui.passcode_theme_file" = "Fichier de thème de code";
@@ -182,6 +187,8 @@
 "ui.paste_one_or_more_card" = "Collez une ou plusieurs empreintes de carte (séparées par des espaces, des virgules ou des retours à la ligne) :";
 "ui.percent" = "%d%%";
 "ui.poster_artwork" = "Affiche";
+"ui.read_originals" = "Lire les illustrations d'origine";
+"ui.read_originals_help" = "Afficher chaque carte telle qu'elle est actuellement et en garder une copie pour pouvoir la restaurer plus tard";
 "ui.refresh_device_connection" = "Actualiser la connexion";
 "ui.remove" = "Supprimer";
 "ui.remove_from_list" = "Retirer de la liste";

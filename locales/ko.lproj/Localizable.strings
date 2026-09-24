@@ -74,9 +74,13 @@
 "status.loaded_into_creator" = "테마 만들기에 '%1$@' 불러옴 (편집 가능한 키 %2$d개)";
 "status.loaded_theme" = "암호 테마 '%1$@' 불러옴 (이미지 %2$d개)";
 "status.no_iphone_allow_accessory" = "iPhone을 찾을 수 없습니다. 충전 전용 케이블이 아닌 데이터 전송이 가능한 케이블을 사용하십시오. Mac에서 액세서리 연결을 허용할지 묻는 메시지가 표시되면 허용을 클릭하십시오.";
+"status.originals_read" = "카드 %2$d개 중 %1$d개의 원본 아트워크를 읽었습니다.";
+"status.originals_read_some_changed" = "카드 %2$d개 중 %1$d개의 원본 아트워크를 읽었습니다. 나머지 카드는 AirCard에서 이미 디자인을 변경했기 때문에 iPhone에 원본이 남아 있지 않습니다.";
+"status.originals_read_some_failed" = "카드 %2$d개 중 %1$d개의 원본 아트워크를 읽었습니다. 나머지 카드를 읽으려면 iPhone의 잠금을 해제한 상태에서 다시 시도하십시오.";
 "status.passcode_sent" = "iPhone으로 전송했습니다. iPhone을 잠갔다 켠 후 새 키패드를 확인하십시오.";
 "status.poster_image_loaded_ready_to" = "포스터 이미지 불러옴 · 구도 조정 및 분할 준비 완료";
 "status.preparing_skin" = "[%1$d/%2$d] %3$@ 스킨 준비 중...";
+"status.reading_originals" = "원본 아트워크 읽는 중 [%1$d/%2$d]...";
 "status.ready" = "준비됨";
 "status.restore_failed" = "카드를 복원하지 못했습니다";
 "status.restored" = "카드를 복원했습니다 · 지갑 앱을 강제 종료하면 원래 디자인이 나타납니다";
@@ -174,6 +178,7 @@
 "ui.no_passthm_loaded_select_a" = ".passthm 없음 · 적용할 테마 패키지를 선택하십시오";
 "ui.ok" = "확인";
 "ui.on_your_iphone_double_click" = "iPhone에서 **측면 버튼을 두 번 누르고**(Apple Pay) **Face ID**로 인증한 다음 **카드를 탭**하십시오.";
+"ui.original_badge" = "원본";
 "ui.original_saved" = "원본 아트워크 저장됨";
 "ui.passcode_sent" = "암호 테마를 iPhone으로 전송했습니다.\n\niPhone을 잠갔다 켜거나 재시동한 후 새 암호 키패드를 확인하십시오.";
 "ui.passcode_theme_file" = "암호 테마 파일";
@@ -182,6 +187,8 @@
 "ui.paste_one_or_more_card" = "카드 해시를 하나 이상 붙여넣으십시오(공백, 쉼표, 줄바꿈으로 구분):";
 "ui.percent" = "%d%%";
 "ui.poster_artwork" = "포스터 아트워크";
+"ui.read_originals" = "원본 아트워크 읽기";
+"ui.read_originals_help" = "각 카드의 현재 모습을 보여 주고, 나중에 되돌릴 수 있도록 Mac에 사본을 저장합니다.";
 "ui.refresh_device_connection" = "기기 연결 새로 고침";
 "ui.remove" = "제거";
 "ui.remove_from_list" = "목록에서 제거";

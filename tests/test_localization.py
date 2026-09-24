@@ -86,7 +86,7 @@ class LocalizationTests(unittest.TestCase):
         "ui.aircard", "ui.twitter_x", "ui.ok", "ui.zoom", "tab.wallet_cards",
         "status.step_message", "ui.device_subtitle", "ui.device_with_link",
         "ui.percent", "ui.telephonyui_8_ios_14_15", "ui.telephonyui_9_ios_16_17",
-        "ui.telephonyui_10_ios_18",
+        "ui.telephonyui_10_ios_18", "ui.original_badge",
     }
 
     def test_nothing_is_left_in_english(self):
