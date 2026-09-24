@@ -54,7 +54,7 @@ class DeviceSelectionTests(unittest.TestCase):
 
     def test_preferred_udid_absent_returns_none_not_substitute(self):
         # A chosen device that has dropped out must NOT be silently replaced by
-        # another iPhone — that would flash onto the wrong device.
+        # another iPhone, which would flash onto the wrong device.
         devices = [_raw("usb-udid", connection="usb")]
         with self._with_devices(devices):
             self.assertIsNone(aircard.get_connected_device(preferred_udid="ghost-udid"))
@@ -97,6 +97,36 @@ class DeviceSelectionTests(unittest.TestCase):
             self.assertIn(key, dev)
         self.assertEqual(dev["name"], "iPhone")
         self.assertEqual(dev["version"], "Unknown")
+
+
+class UntrustedDeviceTests(unittest.TestCase):
+    """A phone showing "Trust This Computer?" must not read as no phone at all."""
+
+    def test_untrusted_phone_is_counted_not_dropped(self):
+        seen = [
+            {"udid": "trusted", "product": "iPhone17,1", "name": "A", "connection": "usb"},
+            {"udid": "waiting-for-trust", "connection": "usb"},   # udid only
+        ]
+        with patch.object(aircard, "list_devices", return_value=seen):
+            usable, untrusted = aircard.survey_devices()
+        self.assertEqual([d["udid"] for d in usable], ["trusted"])
+        self.assertEqual(untrusted, 1)
+
+    def test_only_an_untrusted_phone(self):
+        with patch.object(aircard, "list_devices", return_value=[{"udid": "x"}]):
+            usable, untrusted = aircard.survey_devices()
+        self.assertEqual(usable, [])
+        self.assertEqual(untrusted, 1)
+
+    def test_entries_with_no_udid_are_not_counted_as_phones(self):
+        with patch.object(aircard, "list_devices", return_value=[{"product": "iPhone17,1"}]):
+            self.assertEqual(aircard.survey_devices(), ([], 0))
+
+    def test_enumerates_once(self):
+        """Each enumeration can raise the Trust prompt on the phone again."""
+        with patch.object(aircard, "list_devices", return_value=[{"udid": "x"}]) as enum:
+            aircard.survey_devices()
+        self.assertEqual(enum.call_count, 1)
 
 
 if __name__ == "__main__":

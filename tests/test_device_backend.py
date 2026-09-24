@@ -28,7 +28,7 @@ class DeviceBackendTests(unittest.TestCase):
              "connection": "network", "connected": True},
         ]
         with patch.object(aircard_backend, "find_device_helper", return_value="/x/device_helper"), \
-                patch.object(aircard_backend, "list_connected_devices", return_value=sample):
+                patch.object(aircard_backend, "survey_devices", return_value=(sample, 0)):
             out = self._run(["--devices"])
         self.assertTrue(out["connected"])
         self.assertEqual([d["udid"] for d in out["devices"]], ["usb-udid", "wifi-udid"])
@@ -65,6 +65,14 @@ class DeviceBackendTests(unittest.TestCase):
             out = self._run(["--device"])
         self.assertFalse(out["connected"])
         self.assertEqual(out["error"], "no_device")
+
+
+    def test_devices_reports_phones_waiting_for_trust(self):
+        with patch.object(aircard_backend, "find_device_helper", return_value="/x/device_helper"), \
+                patch.object(aircard_backend, "survey_devices", return_value=([], 2)):
+            out = self._run(["--devices"])
+        self.assertFalse(out["connected"])
+        self.assertEqual(out["untrusted"], 2)
 
 
 if __name__ == "__main__":

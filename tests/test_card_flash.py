@@ -136,5 +136,37 @@ class CardFlashTests(unittest.TestCase):
         write_file.assert_not_called()
 
 
+class FlashRetryVisibilityTests(unittest.TestCase):
+    def test_falling_back_to_single_writes_is_announced(self):
+        """The retry after a failed batch used to be silent for minutes."""
+        buf = io.StringIO()
+        with patch.object(aircard_backend, "build_card_assets",
+                          return_value=[("a@2x.png", b"x"), ("a@3x.png", b"y")]), \
+                patch.object(aircard_backend, "write_files_batch", return_value=False), \
+                patch.object(aircard_backend, "write_file", return_value=True), \
+                patch.object(aircard_backend, "remove_files", return_value=True), \
+                tempfile.NamedTemporaryFile(suffix=".png") as img, \
+                redirect_stdout(buf):
+            aircard_backend.cmd_flash("udid", "CARD", img.name)
+        events = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+        codes = [e.get("code") for e in events]
+        self.assertIn("flash.retrying", codes)
+        retry = events[codes.index("flash.retrying")]
+        self.assertEqual(retry["type"], "progress")
+        self.assertTrue(retry["message"])
+
+    def test_a_clean_batch_write_does_not_announce_a_retry(self):
+        buf = io.StringIO()
+        with patch.object(aircard_backend, "build_card_assets",
+                          return_value=[("a@2x.png", b"x")]), \
+                patch.object(aircard_backend, "write_files_batch", return_value=True), \
+                patch.object(aircard_backend, "remove_files", return_value=True), \
+                tempfile.NamedTemporaryFile(suffix=".png") as img, \
+                redirect_stdout(buf):
+            aircard_backend.cmd_flash("udid", "CARD", img.name)
+        codes = [json.loads(l).get("code") for l in buf.getvalue().splitlines() if l.strip()]
+        self.assertNotIn("flash.retrying", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

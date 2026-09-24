@@ -236,11 +236,23 @@ def _device_sort_key(device: dict) -> tuple:
     )
 
 
+def survey_devices() -> tuple[list[dict], int]:
+    """Usable devices, best first, plus how many were seen but could not be opened.
+
+    A phone that has not trusted this Mac yet comes back with a udid and nothing
+    else. Dropping it quietly is what made the app say "No iPhone found" while
+    the phone sat on the desk asking to be trusted. One enumeration serves both,
+    since each one can raise the Trust prompt on the phone again.
+    """
+    seen = [d for d in list_devices() if d.get("udid")]
+    usable = [d for d in seen if d.get("product")]
+    usable.sort(key=_device_sort_key)
+    return [_normalize_device(d) for d in usable], len(seen) - len(usable)
+
+
 def list_connected_devices() -> list[dict]:
     """Returns every usable device, deterministically ordered (best first)."""
-    usable = [d for d in list_devices() if d.get("udid") and d.get("product")]
-    usable.sort(key=_device_sort_key)
-    return [_normalize_device(d) for d in usable]
+    return survey_devices()[0]
 
 
 def get_connected_device(preferred_udid: str | None = None) -> dict | None:

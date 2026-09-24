@@ -60,6 +60,7 @@ from aircard import (
     BACKED_UP_ASSETS,
     list_connected_devices,
     load_saved_cards,
+    survey_devices,
     read_card_backup,
     save_card_backup,
     save_cards,
@@ -84,15 +85,15 @@ def cmd_device(preferred_udid: str | None = None):
 def cmd_devices():
     """Lists every connected device so the app can offer a device picker.
 
-    The airlift probe is intentionally skipped here — probing opens a session on
+    The airlift probe is intentionally skipped here. Probing opens a session on
     each device and is only needed for whichever one the user selects, which the
     app fetches with a follow-up `--device <udid>` call.
     """
     if not find_device_helper():
         print(json.dumps({"connected": False, "error": "device_helper_missing", "devices": []}))
         return
-    devices = list_connected_devices()
-    print(json.dumps({"connected": bool(devices), "devices": devices}))
+    devices, untrusted = survey_devices()
+    print(json.dumps({"connected": bool(devices), "devices": devices, "untrusted": untrusted}))
 
 
 def cmd_backup(udid: str, card_hash: str) -> bool:
@@ -305,6 +306,18 @@ def cmd_flash(udid: str, card_hash: str, image_path: str) -> bool:
         ok = False
 
     if not ok:
+        # The batch write can take many minutes to give up, and the per-file
+        # retry after it is just as quiet. Say so, or the bar sits still and
+        # people conclude it has hung.
+        print(json.dumps({
+            "type": "progress",
+            "card": card_hash,
+            "step": step,
+            "total": total_steps,
+            "code": "flash.retrying",
+            "message": "The iPhone was slow to take the files, trying them one at a time..."
+        }))
+        sys.stdout.flush()
         # Fallback to individual writes if batch fails
         for asset, payload in asset_payloads:
             try:

@@ -15,7 +15,7 @@ REPO = Path(__file__).resolve().parent.parent
 LOCALES = REPO / "locales"
 BASE = "en"
 
-# "key" = "value";  — value may contain escaped quotes
+# "key" = "value";  the value may contain escaped quotes
 ENTRY = re.compile(r'^\s*"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;\s*$')
 # %@ %d %1$@ %2$d %.1f %% ...
 SPECIFIER = re.compile(r'%(?:(\d+)\$)?[-+ 0#]*[\d.]*([@dioux%fFeEgGsS])')
@@ -80,22 +80,32 @@ class LocalizationTests(unittest.TestCase):
                     f"({want} -> {got}). This crashes at runtime.",
                 )
 
-    def test_no_translation_left_as_english_placeholder(self):
-        """A file full of untouched English means the language never got done."""
+    # Strings that may legitimately read the same as English: product and brand
+    # names, format-only strings, and words spelled the same in some languages.
+    SAME_AS_ENGLISH_OK = {
+        "ui.aircard", "ui.twitter_x", "ui.ok", "ui.zoom", "tab.wallet_cards",
+        "status.step_message", "ui.device_subtitle", "ui.device_with_link",
+        "ui.percent", "ui.telephonyui_8_ios_14_15", "ui.telephonyui_9_ios_16_17",
+        "ui.telephonyui_10_ios_18",
+    }
+
+    def test_nothing_is_left_in_english(self):
+        """Every string differs from the English unless it is named above.
+
+        This used to be a threshold, a quarter of the long strings, and it let the
+        error dialog's own title ship in English in nine languages. A named list
+        is the only version of this check that cannot be quietly outgrown.
+        """
         for path in strings_files():
             lang = path.parent.name
             if lang == f"{BASE}.lproj":
                 continue
             entries = parse(path)
-            if not entries:
-                continue
-            # Short labels legitimately match (OK, Export, AirCard, Log...).
-            long_keys = [k for k, v in self.base.items() if len(v) > 25]
-            identical = [k for k in long_keys if entries.get(k) == self.base[k]]
-            self.assertLess(
-                len(identical), max(3, len(long_keys) // 4),
-                f"{lang}: {len(identical)}/{len(long_keys)} long strings are still the English text",
+            left = sorted(
+                k for k, v in entries.items()
+                if v == self.base.get(k) and k not in self.SAME_AS_ENGLISH_OK
             )
+            self.assertEqual(left, [], f"{lang} still has English for: {left}")
 
     def test_escapes_are_not_doubled(self):
         """A \\n in a .strings file renders as a backslash and an n, not a line.
@@ -128,6 +138,15 @@ class LocalizationTests(unittest.TestCase):
                     got, want,
                     f"{lang} / {key}: {want} line break(s) in English, {got} here",
                 )
+
+    def test_source_wording_has_no_em_dashes(self):
+        """Em dashes are the quickest tell that text was machine-written.
+
+        Only the English source is checked. Russian and Ukrainian use the dash as
+        ordinary punctuation, so banning it in translations would be wrong.
+        """
+        dashed = sorted(k for k, v in self.base.items() if "\u2014" in v)
+        self.assertEqual(dashed, [], f"English strings with an em dash: {dashed}")
 
     def test_files_are_well_formed(self):
         for path in strings_files():

@@ -39,6 +39,9 @@ struct SavedCardsResponse: Codable {
 struct DeviceListResponse: Codable {
     var connected: Bool
     var devices: [DeviceInfo]?
+    // Phones seen but not yet trusting this Mac. Optional so an older backend
+    // that does not send it still decodes.
+    var untrusted: Int?
     var error: String?
 }
 
@@ -573,6 +576,15 @@ class AppViewModel: ObservableObject {
     @Published var backedUpCards: Set<String> = []
     // The card whose face is open in the designer, if any.
     @Published var designingCardID: String?
+    // A phone is plugged in but has not trusted this Mac yet.
+    @Published var awaitingTrust = false
+    // True once a flash has gone quiet long enough that the user deserves to be
+    // told, rather than left looking at a bar that is not moving.
+    @Published var flashStalled = false
+    private var activeFlashProcess: Process?
+    private var lastFlashActivity = Date()
+    private var flashCancelled = false
+    static let flashStallSeconds: TimeInterval = 45
     @Published var isCheckingDevice = false
     @Published var isScanningCards = false
     @Published var cards: [CardItem] = []
@@ -622,10 +634,11 @@ class AppViewModel: ObservableObject {
     }
     
     // /usr/bin/python3 is Apple's shim onto the Command Line Tools. It counts as
-    // an executable even when it cannot run — licence not accepted, tools not
-    // installed — and it sits ahead of a perfectly good Homebrew python. That is
-    // why "sudo xcodebuild -license accept" became the fix people passed around
-    // for a Wallet app. Running each candidate is the only honest test.
+    // an executable even when it cannot run, because the licence was never
+    // accepted or the tools are not installed, and it sits ahead of a perfectly
+    // good Homebrew python. That is why "sudo xcodebuild -license accept" became
+    // the fix people passed around for a Wallet app. Running each candidate is
+    // the only honest test.
     nonisolated static let pythonCandidates = [
         "/usr/bin/python3",
         "/opt/homebrew/bin/python3",
@@ -892,6 +905,15 @@ class AppViewModel: ObservableObject {
         }
     }
     
+    // Stops the card being written now. Cards already sent keep what they got;
+    // the one in progress is left as it was before this run.
+    func cancelFlash() {
+        guard isFlashing else { return }
+        flashCancelled = true
+        activeFlashProcess?.terminate()
+        log("Cancelled by the user.")
+    }
+
     // The designer hands back a finished card face. Write it out the same way a
     // dropped image is, so the flash path treats it like any other skin.
     func applyCardDesign(_ image: NSImage, for cardId: String) {
@@ -932,6 +954,7 @@ class AppViewModel: ObservableObject {
             await MainActor.run {
                 let list = response?.devices ?? []
                 self.devices = list
+                self.awaitingTrust = false
 
                 guard !list.isEmpty else {
                     self.device = nil
@@ -951,6 +974,12 @@ class AppViewModel: ObservableObject {
                             self.errorMessage = L("error.backend_unavailable", "AirCard could not start its device tools. Reinstalling the app usually fixes this.")
                         }
                         self.log("Device detection returned nothing usable. \(errorTail.isEmpty ? "(no error output)" : errorTail)")
+                    } else if (response?.untrusted ?? 0) > 0 {
+                        // The phone is right there, asking. Pointing at the cable
+                        // would send people the wrong way.
+                        self.awaitingTrust = true
+                        self.statusText = L("status.iphone_needs_trust", "Your iPhone is connected but has not trusted this Mac yet. Unlock it, tap Trust, then click refresh.")
+                        self.log("An iPhone is attached but has not trusted this Mac yet.")
                     } else if response?.error == "device_helper_missing" {
                         self.statusText = L("status.device_tools_are_missing_from", "Device tools are missing from this build.")
                         self.log("Bundled device_helper not found — detection cannot run.")
@@ -966,7 +995,7 @@ class AppViewModel: ObservableObject {
                 let target = list.first(where: { $0.udid == keep })?.udid ?? list.first?.udid
                 if list.count > 1 {
                     let name = list.first(where: { $0.udid == target })?.name ?? "iPhone"
-                    self.log("\(list.count) devices connected — using \(name). Switch from the device menu if this is the wrong one.")
+                    self.log("\(list.count) devices connected, using \(name). Switch from the device menu if this is the wrong one.")
                 }
                 self.selectDevice(target, isInitial: true)
             }
@@ -1014,7 +1043,7 @@ class AppViewModel: ObservableObject {
                         self.statusText = L("status.no_iphone_found_please_connect", "No iPhone found. Please connect via USB.")
                     } else {
                         self.statusText = L("status.selected_iphone_is_no_longer", "Selected iPhone is no longer connected.")
-                        self.log("Selected device is no longer available — reconnect it and refresh.")
+                        self.log("Selected device is no longer available. Reconnect it and refresh.")
                     }
                 }
             }
@@ -1316,6 +1345,8 @@ class AppViewModel: ObservableObject {
         }
         
         isFlashing = true
+        flashCancelled = false
+        flashStalled = false
         showLogs = true
         progress = 0.0
         errorMessage = nil
@@ -1414,6 +1445,8 @@ class AppViewModel: ObservableObject {
                     let total = (json["total"] as? NSNumber)?.doubleValue
                     
                     await MainActor.run {
+                        self.lastFlashActivity = Date()
+                        self.flashStalled = false
                         if let step = step, let total = total, total > 0 {
                             let subProgress = step / total
                             let currentProgress = (Double(idx) + subProgress) / totalCards
@@ -1439,6 +1472,25 @@ class AppViewModel: ObservableObject {
                     }
                 }
                 
+                await MainActor.run {
+                    self.activeFlashProcess = flashProcess
+                    self.lastFlashActivity = Date()
+                }
+                // The read below blocks while the helper is silent, so the stall
+                // check has to run beside it. Task.sleep throws on cancel; that
+                // has to end the loop, not be swallowed and carry on.
+                let watchdog = Task { @MainActor in
+                    while true {
+                        do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                        let quiet = Date().timeIntervalSince(self.lastFlashActivity)
+                        if quiet > AppViewModel.flashStallSeconds && !self.flashStalled {
+                            self.flashStalled = true
+                            self.statusText = L("status.flash_slow", "The iPhone is taking a long time to respond. Still trying. If it stays like this, cancel, then unplug the iPhone and plug it back in.")
+                            self.log("No response from the iPhone for \(Int(quiet)) seconds, still waiting.")
+                        }
+                    }
+                }
+
                 while flashProcess.isRunning {
                     let data = handle.availableData
                     if data.isEmpty { usleep(50000); continue }
@@ -1455,6 +1507,8 @@ class AppViewModel: ObservableObject {
                 }
                 flashProcess.waitUntilExit()
                 errPipe.fileHandleForReading.readabilityHandler = nil
+                watchdog.cancel()
+                await MainActor.run { self.activeFlashProcess = nil }
 
                 if flashProcess.terminationStatus != 0 {
                     flashFailed = true
@@ -1472,14 +1526,19 @@ class AppViewModel: ObservableObject {
             let didFail = flashFailed
             await MainActor.run {
                 self.isFlashing = false
-                if didFail {
+                self.flashStalled = false
+                if self.flashCancelled {
+                    self.statusText = L("status.flash_cancelled", "Cancelled. Cards already sent to the iPhone are left as they are.")
+                } else if didFail {
                     self.statusText = L("status.failed_to_apply_card_skins", "Failed to apply card skins.")
                     self.errorMessage = L("error.one_or_more_cards_could", "One or more cards could not be updated. Check the log and try again.")
                     self.log("Skin application stopped after a card update failed.")
                 } else {
-                    self.statusText = L("status.complete_all_cards_updated", "Complete! All cards updated.")
+                    // Nothing on the phone confirms the card actually changed; the
+                    // write is sent and the phone does not report back. Say that.
+                    self.statusText = L("status.cards_sent", "Sent to your iPhone. Force-close Wallet to see the new design.")
                     self.showSuccessAlert = true
-                    self.log("Skins successfully applied to all selected cards!")
+                    self.log("Artwork sent for all selected cards.")
                 }
             }
         }
@@ -1650,9 +1709,9 @@ class AppViewModel: ObservableObject {
                 self.isFlashing = false
                 if exitCode == 0 {
                     self.progress = 1.0
-                    self.statusText = L("status.passcode_theme_applied_successfully", "Passcode theme applied successfully!")
+                    self.statusText = L("status.passcode_sent", "Sent to your iPhone. Lock it to see the new keypad.")
                     self.showSuccessAlert = true
-                    self.log("Passcode theme '\(theme.name)' successfully flashed!")
+                    self.log("Passcode theme '\(theme.name)' sent to the iPhone.")
                 } else {
                     let err = self.errorMessage ?? "Flashing failed (exit code \(exitCode))"
                     self.statusText = err
@@ -2431,13 +2490,13 @@ struct ContentView: View {
         } message: {
             Text(vm.errorMessage ?? "")
         }
-        .alert(L("ui.success", "Success!"), isPresented: $vm.showSuccessAlert) {
+        .alert(L("ui.sent", "Sent to iPhone"), isPresented: $vm.showSuccessAlert) {
             Button(L("ui.ok", "OK")) {}
         } message: {
             if vm.selectedTab == .passcodeThemes {
-                Text(L("ui.passcode_theme_successfully_applied_n", "Passcode theme successfully applied!\n\nLock your iPhone (or restart) to see your new passcode keypad."))
+                Text(L("ui.passcode_sent", "The passcode theme was sent to your iPhone.\n\nLock the iPhone, or restart it, to see the new keypad."))
             } else {
-                Text(L("ui.skins_successfully_applied_to_all", "Skins successfully applied to all selected cards!\n\nPlease force-close the Wallet app on your iPhone (or reboot) to see your new designs."))
+                Text(L("ui.skins_sent", "The new artwork was sent to your iPhone.\n\nForce-close Wallet, or restart the iPhone, to see it. If a card still looks the same afterwards, its design comes from the card issuer and cannot be changed this way."))
             }
         }
         .sheet(isPresented: $showCredits) {
@@ -2513,7 +2572,9 @@ struct ContentView: View {
                             .lineLimit(1)
                     }
                 } else {
-                    Text(L("ui.no_iphone_usb", "No iPhone (USB)"))
+                    Text(vm.awaitingTrust
+                         ? L("ui.tap_trust", "Tap Trust on iPhone")
+                         : L("ui.no_iphone_usb", "No iPhone (USB)"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -3905,6 +3966,16 @@ struct ContentView: View {
                     .tint(.green)
                     .controlSize(.regular)
                     .disabled(readyToFlashCount == 0 || vm.isFlashing || vm.device?.connected != true)
+
+                    // A way out, which people did not have: they waited at 10% or
+                    // 25% and then quit the app to escape.
+                    if vm.isFlashing {
+                        Button(L("ui.cancel", "Cancel")) { vm.cancelFlash() }
+                            .buttonStyle(.bordered)
+                            .tint(vm.flashStalled ? .orange : nil)
+                            .controlSize(.regular)
+                            .help(L("ui.cancel_flash_help", "Stop sending to the iPhone"))
+                    }
                 }
             }
             

@@ -2,7 +2,7 @@
 
 Swift's synthesised Decodable requires a key for every non-optional property.
 A field the backend stops emitting, or never emitted, makes the whole decode
-throw — the app then behaves as though nothing is connected at all, while every
+throw. The app then behaves as though nothing is connected at all, while every
 Python-side test stays green because it only ever looks at the dict Python
 built. That is the gap this file exists to close.
 """
