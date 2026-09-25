@@ -37,6 +37,8 @@ struct SavedCardsResponse: Codable {
     var cards: [String]?
     // Card hash to the saved original's image, for showing the card as it is.
     var previews: [String: String]?
+    // Cards AirCard has written to on this device.
+    var flashed: [String]?
 }
 
 struct DeviceListResponse: Codable {
@@ -52,6 +54,9 @@ struct DeviceListResponse: Codable {
 // made when its cell first comes into view (see SkinThumbnail).
 struct SkinLibraryItem: Identifiable {
     let url: URL
+    // Changes whenever the file does (modification time and size), so a picture
+    // replaced under the same name does not keep showing the old preview.
+    var version: String = ""
     var id: String { url.path }
     var name: String { url.deletingPathExtension().lastPathComponent }
 }
@@ -61,14 +66,17 @@ struct SkinLibraryItem: Identifiable {
 // has been made, and does not hold hundreds of decoded images in memory.
 struct SkinThumbnail: View {
     let url: URL
+    var version: String = ""
     @State private var image: NSImage?
     @State private var failed = false
 
-    private static let cache: NSCache<NSURL, NSImage> = {
-        let cache = NSCache<NSURL, NSImage>()
+    private static let cache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
         cache.countLimit = 240
         return cache
     }()
+
+    private var key: String { url.path + "|" + version }
 
     var body: some View {
         ZStack {
@@ -84,11 +92,14 @@ struct SkinThumbnail: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .task(id: url) {
-            if let cached = Self.cache.object(forKey: url as NSURL) {
+        .task(id: key) {
+            let key = self.key
+            failed = false
+            if let cached = Self.cache.object(forKey: key as NSString) {
                 image = cached
                 return
             }
+            image = nil
             let source = url
             let made = await Task.detached(priority: .userInitiated) { () -> CGImage? in
                 AppViewModel.skinThumbnail(source)
@@ -96,7 +107,7 @@ struct SkinThumbnail: View {
             guard !Task.isCancelled else { return }
             if let made {
                 let thumbnail = NSImage(cgImage: made, size: .zero)
-                Self.cache.setObject(thumbnail, forKey: source as NSURL)
+                Self.cache.setObject(thumbnail, forKey: key as NSString)
                 image = thumbnail
             } else {
                 failed = true
@@ -108,16 +119,31 @@ struct SkinThumbnail: View {
 // A line under the library's import controls: progress, what was added, or
 // what went wrong. Shown in the sheet itself, since an alert on the window
 // behind it may not appear while the sheet is up.
-struct SkinLibraryNote {
+struct SkinLibraryNote: Equatable {
     let text: String
     var isError = false
+    // Each note is new even when the words repeat, so VoiceOver hears it again.
+    let id = UUID()
 }
 
 // What the backend said about one import.
 struct SkinImportResult {
     var imported: [String] = []
     var skipped = 0
+    var duplicates = 0
+    var encrypted = 0
+    var unsupported = 0
+    var overLimit = 0
     var code = ""
+
+    mutating func add(_ other: SkinImportResult) {
+        imported += other.imported
+        skipped += other.skipped
+        duplicates += other.duplicates
+        encrypted += other.encrypted
+        unsupported += other.unsupported
+        overLimit += other.overLimit
+    }
 }
 
 // Fetches a pack or picture from a link into a folder of its own. It stops at
@@ -130,11 +156,16 @@ final class SkinDownloader: NSObject, URLSessionDataDelegate {
         case webPage
         case tooLarge
         case network(String)
+        // The link works in a browser but not here: plain http, a certificate
+        // problem, or a connection too slow to hold. The browser can fetch it.
+        case needsBrowser(String)
         case cancelled
     }
 
-    // Matches MAX_PACK_BYTES in aircard.py.
-    static let maxBytes: Int64 = 400 * 1024 * 1024
+    // Matches MAX_PACK_BYTES in aircard.py. Decimal, like the size shown while
+    // downloading: in binary units the counter went on to 419 MB and then
+    // said it had stopped at 400.
+    static let maxBytes: Int64 = 400_000_000
 
     private let url: URL
     private let folder: URL
@@ -159,8 +190,11 @@ final class SkinDownloader: NSObject, URLSessionDataDelegate {
 
     func start() {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 15 * 60
+        // Only a connection that goes quiet fails. A slow one that keeps
+        // moving is allowed to finish: a fixed 15 minutes cut off every large
+        // pack on a slow line at the same point, retry after retry.
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 24 * 60 * 60
         // Callbacks arrive on the main queue, which is what lets them call
         // straight into the view model below.
         let session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
@@ -182,6 +216,13 @@ final class SkinDownloader: NSObject, URLSessionDataDelegate {
         let name = String(cleaned).trimmingCharacters(in: .whitespaces)
         let meaningless = name.allSatisfy { "_. ".contains($0) }
         return meaningless || name.hasPrefix(".") ? "download" : name
+    }
+
+    static func browserCanHelp(_ error: Error) -> Bool {
+        guard let code = (error as? URLError)?.code else { return false }
+        return [.appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
+                .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+                .serverCertificateHasUnknownRoot, .clientCertificateRejected, .timedOut].contains(code)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
@@ -233,13 +274,576 @@ final class SkinDownloader: NSObject, URLSessionDataDelegate {
         if let failure {
             result = .failure(failure)
         } else if let error {
-            result = .failure(.network(error.localizedDescription))
+            result = .failure(Self.browserCanHelp(error) ? .needsBrowser(error.localizedDescription) : .network(error.localizedDescription))
         } else if let file {
             result = .success(file)
         } else {
             result = .failure(.network(URLError(.zeroByteResource).localizedDescription))
         }
         MainActor.assumeIsolated { onFinish(result) }
+    }
+}
+
+// MARK: - One copy per Mac
+
+// Keeps a single, current AirCard on a Mac. People ran it straight from the
+// disk image, dragged a new version in with "Keep Both", or had an old download
+// lying around, then opened the wrong one and met an older AirCard. Cards, saved
+// originals and the skin library live outside the app, so every copy shares
+// them and replacing one loses nothing.
+//
+// This part only decides and moves files; the prompts are in the extension
+// below, so the decisions can be tested without an app running.
+enum InstallGuard {
+    struct AppCopy: Equatable {
+        let url: URL
+        let version: String
+        let build: String
+        var bundleID: String? = nil
+    }
+
+    enum Placement: Equatable {
+        case installed      // inside an Applications folder
+        case diskImage      // on a mounted disk image, which is what the DMG is
+        case elsewhere      // Downloads, the Desktop, a build folder, another disk...
+    }
+
+    enum MoveDecision: Equatable {
+        case alreadyInstalled        // the installed one is this very copy, through a link
+        case moveIn
+        case replace(older: AppCopy)
+        case openInstalled(newer: AppCopy)
+        case openInstalledSame(AppCopy)
+    }
+
+    enum StrayPlan: Equatable {
+        case nothing
+        case openNewer(AppCopy)
+        case clear([AppCopy])
+    }
+
+    // Numeric, part by part, so 1.10 is newer than 1.9 and 1.4 equals 1.4.0.
+    nonisolated static func compareVersions(_ a: String, _ b: String) -> ComparisonResult {
+        let x = a.split(separator: ".").map { Int($0.filter(\.isNumber)) ?? 0 }
+        let y = b.split(separator: ".").map { Int($0.filter(\.isNumber)) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let l = i < x.count ? x[i] : 0
+            let r = i < y.count ? y[i] : 0
+            if l != r { return l < r ? .orderedAscending : .orderedDescending }
+        }
+        return .orderedSame
+    }
+
+    // Version first, then build number.
+    nonisolated static func compare(_ a: AppCopy, _ b: AppCopy) -> ComparisonResult {
+        let byVersion = compareVersions(a.version, b.version)
+        return byVersion != .orderedSame ? byVersion : compareVersions(a.build, b.build)
+    }
+
+    // How a copy is named to people: its version, and its build too when that
+    // is the only thing telling it apart from the other copy.
+    nonisolated static func label(_ copy: AppCopy, against other: AppCopy) -> String {
+        compareVersions(copy.version, other.version) == .orderedSame
+            && compareVersions(copy.build, other.build) != .orderedSame
+            ? "\(copy.version) (\(copy.build))" : copy.version
+    }
+
+    nonisolated static func appCopy(at url: URL) -> AppCopy? {
+        guard let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")) else { return nil }
+        return AppCopy(url: url,
+                       version: info["CFBundleShortVersionString"] as? String ?? "0",
+                       build: info["CFBundleVersion"] as? String ?? "0",
+                       bundleID: info["CFBundleIdentifier"] as? String)
+    }
+
+    // One spelling per location, so the same folder reached through a symlink
+    // or a trailing slash is recognised as the same place. resolvingSymlinksInPath
+    // gives up on a path that does not exist, and /var is itself a link to
+    // /private/var, so one place could come out spelt two ways and this copy
+    // would not recognise itself. The deepest part that exists is resolved with
+    // realpath and the rest put back on.
+    nonisolated static func canonicalPath(_ url: URL) -> String {
+        var existing = url.standardizedFileURL
+        var rest: [String] = []
+        while existing.path != "/" && !FileManager.default.fileExists(atPath: existing.path) {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing = existing.deletingLastPathComponent()
+        }
+        var base = existing.path
+        if let resolved = realpath(existing.path, nil) {
+            base = String(cString: resolved)
+            free(resolved)
+        }
+        // Joined by hand: standardizing again would strip /private from the
+        // part that exists and not from the rest, which is the mismatch this
+        // function is here to prevent.
+        return rest.isEmpty ? base : (base == "/" ? "" : base) + "/" + rest.joined(separator: "/")
+    }
+
+    nonisolated static func placement(of url: URL, applicationsFolders: [URL], onDiskImage: Bool) -> Placement {
+        let path = canonicalPath(url)
+        if applicationsFolders.contains(where: { path.hasPrefix(canonicalPath($0) + "/") }) { return .installed }
+        return onDiskImage ? .diskImage : .elsewhere
+    }
+
+    // Never offers to put an older copy over a newer one.
+    nonisolated static func moveDecision(own: AppCopy, installed: AppCopy?) -> MoveDecision {
+        guard let installed else { return .moveIn }
+        if canonicalPath(installed.url) == canonicalPath(own.url) { return .alreadyInstalled }
+        switch compare(own, installed) {
+        case .orderedDescending: return .replace(older: installed)
+        case .orderedSame: return .openInstalledSame(installed)
+        case .orderedAscending: return .openInstalled(newer: installed)
+        }
+    }
+
+    // The move offer comes back for a newer copy than the one turned down, so
+    // one "Don't ask again" does not silence it for every later version.
+    nonisolated static func shouldOfferMove(own: AppCopy, refused: String?) -> Bool {
+        guard let refused else { return true }
+        let parts = refused.split(separator: "|", maxSplits: 1).map(String.init)
+        let turnedDown = AppCopy(url: own.url, version: parts.first ?? "0", build: parts.count > 1 ? parts[1] : "0")
+        return compare(own, turnedDown) == .orderedDescending
+    }
+
+    nonisolated static func refusalKey(_ own: AppCopy) -> String { own.version + "|" + own.build }
+
+    // Two copies opened at the same moment each see the other. Both yielding
+    // left nothing open, so both apply the same rule and exactly one yields:
+    // the one that started later, or on a tie the higher process number.
+    nonisolated static func shouldYield(theirLaunch: Date?, theirPID: Int32, myLaunch: Date?, myPID: Int32) -> Bool {
+        let theirs = theirLaunch ?? .distantFuture
+        let mine = myLaunch ?? .distantFuture
+        return theirs != mine ? theirs < mine : theirPID < myPID
+    }
+
+    // Stray copies worth offering to clear: not this one, not in any Trash,
+    // not on a disk image (it goes away when ejected), not on another disk (a
+    // backup clone is not a stray), not running, and not one the person
+    // already chose to keep.
+    nonisolated static func strayCopies(found: [URL], own: URL, running: Set<String>, kept: Set<String>,
+                                        exists: (URL) -> Bool, onDiskImage: (URL) -> Bool,
+                                        sameVolume: (URL) -> Bool) -> [URL] {
+        let ownPath = canonicalPath(own)
+        var seen = Set<String>()
+        return found.filter { url in
+            let path = canonicalPath(url)
+            guard path != ownPath, seen.insert(path).inserted else { return false }
+            let inTrash = path.split(separator: "/").contains { $0 == ".Trash" || $0 == ".Trashes" }
+            return exists(url)
+                && !inTrash
+                && !onDiskImage(url)
+                && sameVolume(url)
+                && !running.contains(path)
+                && !kept.contains(path)
+        }
+    }
+
+    // A newer copy elsewhere is dealt with first: this older one must never
+    // offer to throw away the newer. Once that one is running, its own check
+    // offers to clear this one. An equal copy is not newer, or two equal
+    // copies would send the person back and forth for ever.
+    nonisolated static func strayPlan(own: AppCopy, strays: [AppCopy]) -> StrayPlan {
+        if let newest = strays.filter({ compare($0, own) == .orderedDescending })
+            .max(by: { compare($0, $1) == .orderedAscending }) {
+            return .openNewer(newest)
+        }
+        return strays.isEmpty ? .nothing : .clear(strays)
+    }
+
+    // What may be thrown away to make room: only an AirCard, and only an older
+    // one than the copy moving in. Checked again just before, since the folder
+    // can change while a prompt is up.
+    nonisolated static func safeToReplace(_ existing: AppCopy?, with own: AppCopy) -> Bool {
+        guard let existing else { return false }
+        if let id = existing.bundleID, let ownID = own.bundleID, id != ownID { return false }
+        if existing.bundleID == nil { return false }
+        return compare(own, existing) == .orderedDescending
+    }
+
+    struct NotReplaceable: LocalizedError {
+        var errorDescription: String? {
+            L("install.not_replaceable", "Applications already has something called AirCard.app that is not an older AirCard, so it was left alone.")
+        }
+    }
+
+    nonisolated static let stagingPrefix = ".AirCard-installing-"
+
+    // Copies the app into the folder as AirCard.app. The copy is made next to
+    // it under a hidden name first, so a failure part way leaves the installed
+    // app untouched and no half-built copy behind; an older AirCard.app is
+    // handed to `discard` (the Trash, in the app) only once the new copy is
+    // complete, and put back if the final rename fails.
+    nonisolated static func install(_ source: URL, into folder: URL,
+                                    discard: (URL) throws -> URL?) throws -> URL {
+        let fm = FileManager.default
+        // Leftovers of an attempt that was killed part way; only this code
+        // makes names like these.
+        for name in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+        where name.hasPrefix(stagingPrefix) && name.hasSuffix(".app") {
+            try? fm.removeItem(at: folder.appendingPathComponent(name))
+        }
+        let destination = folder.appendingPathComponent("AirCard.app")
+        let staging = folder.appendingPathComponent(stagingPrefix + UUID().uuidString + ".app")
+        var placed = false
+        defer { if !placed { try? fm.removeItem(at: staging) } }
+        try fm.copyItem(at: source, to: staging)
+        clearQuarantine(staging)
+        var discarded: URL?
+        if fm.fileExists(atPath: destination.path) {
+            discarded = try discard(destination)
+        }
+        do {
+            try fm.moveItem(at: staging, to: destination)
+            placed = true
+        } catch {
+            if let discarded { try? fm.moveItem(at: discarded, to: destination) }
+            throw error
+        }
+        return destination
+    }
+
+    // The copy has already been opened and allowed once, from where it was;
+    // without this the moved copy would be stopped again as a fresh download.
+    nonisolated static func clearQuarantine(_ bundle: URL) {
+        let attribute = "com.apple.quarantine"
+        removexattr(bundle.path, attribute, XATTR_NOFOLLOW)
+        guard let items = FileManager.default.enumerator(atPath: bundle.path) else { return }
+        for case let item as String in items {
+            removexattr(bundle.appendingPathComponent(item).path, attribute, XATTR_NOFOLLOW)
+        }
+    }
+
+    // Waits for this process to end, ejects the disk image it ran from if
+    // there was one, and opens the installed copy. The paths are passed as
+    // arguments, never pasted into the script, so no name can break out of it.
+    nonisolated static let relaunchScript = """
+    while /bin/kill -0 "$1" >/dev/null 2>&1; do /bin/sleep 0.2; done
+    if [ -n "$3" ]; then /usr/bin/hdiutil detach "$3" -quiet >/dev/null 2>&1; fi
+    /usr/bin/open "$2"
+    """
+
+    nonisolated static func relaunchArguments(pid: Int32, open app: URL, eject volume: URL?) -> [String] {
+        ["-c", relaunchScript, "aircard-relaunch", String(pid), app.path, volume?.path ?? ""]
+    }
+
+    // Only the disk image the app ran from is ejected, never whatever other
+    // disk it happened to be on.
+    nonisolated static func ejectTarget(placement: Placement, volume: URL?) -> URL? {
+        guard placement == .diskImage, let volume, volume.path.hasPrefix("/Volumes/") else { return nil }
+        return volume
+    }
+
+    // Mount points of attached disk images, from `hdiutil info -plist`. Being
+    // read-only is not enough to be the DMG: Time Machine, a locked card or a
+    // read-only share are too, and must never be ejected or treated as one.
+    nonisolated static func diskImageMountPoints(fromHdiutilInfo data: Data) -> Set<String> {
+        guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let images = plist["images"] as? [[String: Any]] else { return [] }
+        var points = Set<String>()
+        for image in images {
+            for entity in image["system-entities"] as? [[String: Any]] ?? [] {
+                if let point = entity["mount-point"] as? String { points.insert(point) }
+            }
+        }
+        return points
+    }
+
+    nonisolated static func mountedDiskImages() -> Set<String> {
+        let run = Process()
+        run.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        run.arguments = ["info", "-plist"]
+        let pipe = Pipe()
+        run.standardOutput = pipe
+        run.standardError = FileHandle.nullDevice
+        guard (try? run.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        run.waitUntilExit()
+        return diskImageMountPoints(fromHdiutilInfo: data)
+    }
+
+    nonisolated static func isOnDiskImage(_ url: URL, mounted: Set<String>) -> Bool {
+        guard let volume = volume(of: url) else { return false }
+        let point = canonicalPath(volume)
+        return mounted.contains(point) || mounted.contains(volume.path)
+    }
+
+    // Where a copy run from Downloads or a disk image was really opened from.
+    // macOS runs such a copy from a random read-only folder (App Translocation),
+    // and only Security.framework knows the original.
+    nonisolated static func originalLocation(of url: URL) -> URL {
+        typealias IsTranslocated = @convention(c) (CFURL, UnsafeMutablePointer<Bool>, UnsafeMutablePointer<Unmanaged<CFError>?>?) -> Bool
+        typealias OriginalPath = @convention(c) (CFURL, UnsafeMutablePointer<Unmanaged<CFError>?>?) -> Unmanaged<CFURL>?
+        guard let security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY),
+              let isSym = dlsym(security, "SecTranslocateIsTranslocatedURL"),
+              let origSym = dlsym(security, "SecTranslocateCreateOriginalPathForURL") else { return url }
+        let isTranslocated = unsafeBitCast(isSym, to: IsTranslocated.self)
+        let originalPath = unsafeBitCast(origSym, to: OriginalPath.self)
+        var translocated = false
+        guard isTranslocated(url as CFURL, &translocated, nil), translocated,
+              let original = originalPath(url as CFURL, nil)?.takeRetainedValue() else { return url }
+        return original as URL
+    }
+
+    nonisolated static func volume(of url: URL) -> URL? {
+        (try? url.resourceValues(forKeys: [.volumeURLKey]))?.volume
+    }
+}
+
+extension InstallGuard {
+    static let keptCopiesKey = "installGuard.keptCopies"
+    static let refusedMoveKey = "installGuard.refusedMoveFor"
+    static let useHereKey = "installGuard.useCopyAt"
+
+    static var systemApplications: URL { URL(fileURLWithPath: "/Applications", isDirectory: true) }
+    static var userApplications: URL {
+        FileManager.default.urls(for: .applicationDirectory, in: .userDomainMask)[0]
+    }
+    static var applicationsFolders: [URL] { [systemApplications, userApplications] }
+
+    // At launch: hand over to a copy that is already running, otherwise offer
+    // to move into Applications, or, once there, to clear out stray copies.
+    @MainActor static func runAtLaunch() {
+        guard let running = appCopy(at: Bundle.main.bundleURL) else { return }
+        if handOverToRunningCopy(own: running) { return }
+        let original = originalLocation(of: Bundle.main.bundleURL)
+        let own = AppCopy(url: original, version: running.version, build: running.build, bundleID: running.bundleID)
+        let place = placement(of: original, applicationsFolders: applicationsFolders,
+                              onDiskImage: isOnDiskImage(original, mounted: mountedDiskImages()))
+        if place == .installed {
+            offerToClearStrayCopies(own: own)
+        } else {
+            offerToMoveIn(own: own, placement: place)
+        }
+    }
+
+    // Two copies running at once both talk to the phone and both write the card
+    // list. The one that started first stays; this one brings it forward and quits.
+    @MainActor static func handOverToRunningCopy(own: AppCopy) -> Bool {
+        guard let id = Bundle.main.bundleIdentifier else { return false }
+        let me = NSRunningApplication.current
+        guard let other = NSRunningApplication.runningApplications(withBundleIdentifier: id).first(where: {
+            $0.processIdentifier != me.processIdentifier && !$0.isTerminated
+                && shouldYield(theirLaunch: $0.launchDate, theirPID: $0.processIdentifier,
+                               myLaunch: me.launchDate, myPID: me.processIdentifier)
+        }) else { return false }
+        let otherVersion = other.bundleURL.flatMap { appCopy(at: $0) }?.version ?? "?"
+        if compareVersions(otherVersion, own.version) != .orderedSame {
+            _ = ask(title: L("install.running_title", "AirCard is already open"),
+                    body: String(format: L("install.running_body", "AirCard %1$@ is already open. Quit it first if you want to use version %2$@."), otherVersion, own.version),
+                    buttons: [L("ui.ok", "OK")])
+        }
+        other.activate()
+        NSApp.terminate(nil)
+        return true
+    }
+
+    // The installed copy to measure against: the newest AirCard in either
+    // Applications folder.
+    static func installedCopies() -> [AppCopy] {
+        applicationsFolders.compactMap { appCopy(at: $0.appendingPathComponent("AirCard.app")) }
+    }
+
+    // Where a move goes: /Applications when this account can write there,
+    // otherwise the account's own Applications folder, so a standard user is
+    // not shown an offer that can only fail, again at every launch.
+    static func moveTarget() -> URL {
+        FileManager.default.isWritableFile(atPath: systemApplications.path) ? systemApplications : userApplications
+    }
+
+    @MainActor static func offerToMoveIn(own: AppCopy, placement: Placement) {
+        let defaults = UserDefaults.standard
+        if (defaults.stringArray(forKey: useHereKey) ?? []).contains(canonicalPath(own.url)) { return }
+        let newest = installedCopies().max { compare($0, $1) == .orderedAscending }
+        switch moveDecision(own: own, installed: newest) {
+        case .alreadyInstalled:
+            offerToClearStrayCopies(own: own)
+        case .openInstalled(let newer):
+            let answer = ask(title: L("install.newer_installed_title", "A newer AirCard is already installed"),
+                             body: String(format: L("install.newer_installed_body", "Applications has AirCard %1$@, and this copy is %2$@."), label(newer, against: own), label(own, against: newer)),
+                             buttons: [L("install.open_installed", "Open the Installed One"), L("install.use_this_copy", "Use This Copy")])
+            if answer == 0 { switchTo(newer.url) } else { rememberUseHere(own) }
+        case .openInstalledSame(let same):
+            let answer = ask(title: L("install.same_installed_title", "AirCard is already in Applications"),
+                             body: String(format: L("install.same_installed_body", "The copy in Applications is the same version, %@. Use that one, so there is one AirCard in use on this Mac?"), own.version),
+                             buttons: [L("install.open_installed", "Open the Installed One"), L("install.use_this_copy", "Use This Copy")])
+            if answer == 0 { switchTo(same.url) } else { rememberUseHere(own) }
+        case .moveIn, .replace:
+            guard shouldOfferMove(own: own, refused: defaults.string(forKey: refusedMoveKey)) else { return }
+            let target = moveTarget()
+            var body = placement == .diskImage
+                ? L("install.move_body_disk_image", "AirCard is running from its disk image. Moved into Applications, it keeps working after the disk image is ejected, and this Mac has one copy of it.")
+                : String(format: L("install.move_body_folder", "AirCard is running from “%@”. Moved into Applications, it is where you would look for it, and this Mac has one copy of it."),
+                         FileManager.default.displayName(atPath: own.url.deletingLastPathComponent().path))
+            let replaced = appCopy(at: target.appendingPathComponent("AirCard.app"))
+            if let replaced, safeToReplace(replaced, with: own) {
+                body += "\n\n" + String(format: L("install.move_replaces", "The older AirCard %@ in Applications goes to the Trash."), label(replaced, against: own))
+            }
+            let (answer, neverAgain) = askWithNeverAgain(
+                title: L("install.move_title", "Move AirCard to Applications?"), body: body,
+                buttons: [L("install.move_button", "Move to Applications"), L("install.not_now", "Not Now")])
+            if answer == 0 {
+                moveIn(own: own, placement: placement, into: target)
+            } else if neverAgain {
+                defaults.set(refusalKey(own), forKey: refusedMoveKey)
+            }
+        }
+    }
+
+    static func rememberUseHere(_ own: AppCopy) {
+        let defaults = UserDefaults.standard
+        let places = Set(defaults.stringArray(forKey: useHereKey) ?? []).union([canonicalPath(own.url)])
+        defaults.set(Array(places).sorted(), forKey: useHereKey)
+    }
+
+    @MainActor static func moveIn(own: AppCopy, placement: Placement, into folder: URL) {
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let installed = try install(own.url, into: folder) { old in
+                // Looked at again now, not when the prompt was built.
+                guard safeToReplace(appCopy(at: old), with: own) else { throw NotReplaceable() }
+                var trashed: NSURL?
+                try FileManager.default.trashItem(at: old, resultingItemURL: &trashed)
+                return trashed as URL?
+            }
+            // Moved, not copied: a copy left in Downloads would be the next
+            // stray. A disk image is ejected instead, once this copy has quit.
+            let eject = ejectTarget(placement: placement, volume: volume(of: own.url))
+            if placement == .elsewhere {
+                try? FileManager.default.trashItem(at: own.url, resultingItemURL: nil)
+            }
+            let relaunch = Process()
+            relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+            relaunch.arguments = relaunchArguments(pid: ProcessInfo.processInfo.processIdentifier, open: installed, eject: eject)
+            try relaunch.run()
+            NSApp.terminate(nil)
+        } catch {
+            _ = ask(title: L("install.move_failed_title", "AirCard could not be moved"),
+                    body: String(format: L("install.move_failed_body", "%@\n\nYou can drag AirCard into Applications in Finder instead."), error.localizedDescription),
+                    buttons: [L("ui.ok", "OK")])
+        }
+    }
+
+    @MainActor static func offerToClearStrayCopies(own: AppCopy) {
+        guard let id = Bundle.main.bundleIdentifier else { return }
+        let defaults = UserDefaults.standard
+        let kept = Set(defaults.stringArray(forKey: keptCopiesKey) ?? [])
+        let running = Set(NSRunningApplication.runningApplications(withBundleIdentifier: id).compactMap { $0.bundleURL.map { canonicalPath($0) } })
+        let mounted = mountedDiskImages()
+        let ownVolume = volume(of: own.url).map { canonicalPath($0) }
+        let urls = strayCopies(found: NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id),
+                               own: own.url, running: running, kept: kept,
+                               exists: { FileManager.default.fileExists(atPath: $0.path) },
+                               onDiskImage: { isOnDiskImage($0, mounted: mounted) },
+                               sameVolume: { url in volume(of: url).map { canonicalPath($0) } == ownVolume })
+        let strays = urls.compactMap { appCopy(at: $0) }
+        switch strayPlan(own: own, strays: strays) {
+        case .nothing:
+            return
+        case .openNewer(let newer):
+            let answer = ask(title: L("install.newer_elsewhere_title", "A newer AirCard is on this Mac"),
+                             body: String(format: L("install.newer_elsewhere_body", "AirCard %1$@ is in %2$@, and this one is %3$@. Open the newer one?"), label(newer, against: own), place(of: newer.url), label(own, against: newer)),
+                             buttons: [L("install.open_newer", "Open the Newer One"), L("install.keep_them", "Keep Them")])
+            if answer == 0 { switchTo(newer.url) } else { remember(kept: [newer.url]) }
+        case .clear(let copies):
+            let list = copies.map { String(format: L("install.copy_line", "AirCard %1$@ in %2$@"), label($0, against: own), place(of: $0.url)) }
+                .joined(separator: "\n")
+            // Only called older when they are: a same-version copy is an extra,
+            // not an older AirCard.
+            let allOlder = copies.allSatisfy { compare($0, own) == .orderedAscending }
+            let body = allOlder
+                ? String(format: L("install.copies_body", "%@\n\nOpening one of them by mistake starts an older AirCard. Move them to the Trash? Your cards, saved originals and skin library stay, because every copy shares them."), list)
+                : String(format: L("install.copies_body_extra", "%1$@\n\nThis AirCard is %2$@, so these are extra copies. Move them to the Trash, so one AirCard is in use? Your cards, saved originals and skin library stay, because every copy shares them."), list, own.version)
+            let answer = ask(title: L("install.copies_title", "Other copies of AirCard are on this Mac"), body: body,
+                             buttons: [L("skins.move_to_trash", "Move to Trash"), L("install.keep_them", "Keep Them")])
+            if answer == 0 {
+                var failed: [String] = []
+                for copy in copies {
+                    do { try FileManager.default.trashItem(at: copy.url, resultingItemURL: nil) }
+                    catch { failed.append(place(of: copy.url)) }
+                }
+                if !failed.isEmpty {
+                    _ = ask(title: L("install.copies_title", "Other copies of AirCard are on this Mac"),
+                            body: String(format: L("install.trash_failed", "These could not be moved to the Trash, so they are still there:\n%@"), failed.joined(separator: "\n")),
+                            buttons: [L("ui.ok", "OK")])
+                }
+            } else {
+                remember(kept: copies.map(\.url))
+            }
+        }
+    }
+
+    // The folder as Finder names it, with its parent, in the person's language.
+    static func place(of app: URL) -> String {
+        let parts = FileManager.default.componentsToDisplay(forPath: app.deletingLastPathComponent().path) ?? [app.deletingLastPathComponent().lastPathComponent]
+        return parts.suffix(2).joined(separator: " › ")
+    }
+
+    static func remember(kept urls: [URL]) {
+        let defaults = UserDefaults.standard
+        let kept = Set(defaults.stringArray(forKey: keptCopiesKey) ?? []).union(urls.map { canonicalPath($0) })
+        defaults.set(Array(kept).sorted(), forKey: keptCopiesKey)
+    }
+
+    // Opened only after this copy has quit. Opened straight away, the other
+    // copy's launch check could find this one still running and hand over to
+    // it just as this one quits, leaving nothing open.
+    @MainActor static func switchTo(_ app: URL) {
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = relaunchArguments(pid: ProcessInfo.processInfo.processIdentifier, open: app, eject: nil)
+        do {
+            try relaunch.run()
+        } catch {
+            NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
+        }
+        NSApp.terminate(nil)
+    }
+
+    // Returns the index of the button pressed.
+    @MainActor static func ask(title: String, body: String, buttons: [String]) -> Int {
+        askWithNeverAgain(title: title, body: body, buttons: buttons, offerNeverAgain: false).answer
+    }
+
+    @MainActor static func askWithNeverAgain(title: String, body: String, buttons: [String],
+                                             offerNeverAgain: Bool = true) -> (answer: Int, neverAgain: Bool) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = body
+        for button in buttons { alert.addButton(withTitle: button) }
+        if offerNeverAgain {
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = L("install.dont_ask", "Don't ask again")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        return (response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue,
+                offerNeverAgain && alert.suppressionButton?.state == .on)
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        InstallGuard.runAtLaunch()
+    }
+
+    // Closing the window used to quit on the spot, mid-flash: the rest of the
+    // cards were never sent and nothing said which went through. While the
+    // phone is being written to, the app keeps running without its window;
+    // the Dock icon brings it back.
+    @MainActor func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !(AppViewModel.shared?.isFlashing ?? false)
+    }
+
+    @MainActor func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard AppViewModel.shared?.isFlashing == true else { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L("quit.busy_title", "AirCard is still working with your iPhone")
+        alert.informativeText = L("quit.busy_body", "Quitting now can leave a card with only part of its new artwork. Let it finish, or quit anyway.")
+        alert.addButton(withTitle: L("quit.keep_working", "Let It Finish"))
+        alert.addButton(withTitle: L("quit.quit_anyway", "Quit Anyway"))
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
     }
 }
 
@@ -731,12 +1335,25 @@ class PasscodeThemeExporter {
         }
     }
     
+    // Themes packed from the Creator only to be sent. Every send left a whole
+    // archive behind; now each replaces the last, and the folder is cleared at
+    // launch.
+    static var stagingFolder: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("AirCard-staged-themes", isDirectory: true)
+    }
+
+    static func clearStagedThemes() {
+        try? FileManager.default.removeItem(at: stagingFolder)
+    }
+
     static func stageTemporaryTheme(
         keys: [String: NSImage],
         language: PasscodeLanguageTarget = .all,
         boldMode: PasscodeBoldTarget = .both
     ) -> URL? {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("AirCard_Custom_\(UUID().uuidString).passthm")
+        clearStagedThemes()
+        try? FileManager.default.createDirectory(at: stagingFolder, withIntermediateDirectories: true)
+        let tempURL = stagingFolder.appendingPathComponent("AirCard_Custom_\(UUID().uuidString).passthm")
         do {
             try exportTheme(keys: keys, targetURL: tempURL, language: language, boldMode: boldMode)
             return tempURL
@@ -794,8 +1411,19 @@ class AppViewModel: ObservableObject {
     // selected card.
     @Published var skinLibraryCardID: String?
     @Published var skinLibraryNote: SkinLibraryNote?
-    @Published var isImportingSkins = false
-    @Published var isDownloadingSkins = false
+    @Published var isImportingSkins = false { didSet { updateKeepAwake() } }
+    @Published var isDownloadingSkins = false { didSet { updateKeepAwake() } }
+    // "Downloading... 12 MB" or "Adding...", kept apart from the outcome line so
+    // the counter cannot wipe a message before anyone reads it.
+    @Published var skinProgress: String?
+    // Bumped when a download finishes, so the sheet can clear the link then and
+    // not before: a failed download still needs the link to try in a browser.
+    @Published var skinDownloadSucceeded = 0
+    private var skinNoteUnseen = false
+    private var pendingSkinImports: [(sources: [URL], temporary: URL?)] = []
+    private var batchSkinResult = SkinImportResult()
+    private var batchSkinUnreadable = 0
+    private var awakeActivity: NSObjectProtocol?
     // Held until the library has closed, then handed to the designer: two
     // sheets cannot be up at once.
     private var skinChosenFromLibrary: NSImage?
@@ -805,6 +1433,13 @@ class AppViewModel: ObservableObject {
     private var recentSkinImports: [String] = []
     // A phone is plugged in but has not trusted this Mac yet.
     @Published var awaitingTrust = false
+    // AirCard's own device helper failed; not the same as no phone.
+    @Published var helperFailed = false
+    // Connected, but not something AirCard can work with as it stands.
+    @Published var deviceWarning = false
+    // Why device detection could not run at all, until it can. Shown on the
+    // main screen: the alert that says it comes once and is easy to dismiss.
+    @Published var backendFailure: BackendFailure?
     // Keeps looking for a phone while none is connected, so nobody has to
     // unplug and replug, or find the refresh button, after answering a prompt.
     private var deviceWatch: Timer?
@@ -826,10 +1461,30 @@ class AppViewModel: ObservableObject {
     private var flashCancelled = false
     static let flashStallSeconds: TimeInterval = 45
     @Published var isCheckingDevice = false
-    @Published var isScanningCards = false
+    @Published var isScanningCards = false { didSet { updateKeepAwake() } }
     @Published var cards: [CardItem] = []
     
-    @Published var isFlashing = false
+    @Published var isFlashing = false {
+        didSet {
+            if !isFlashing {
+                busyJob = nil
+                // A full bar left over from the last flash read as the progress
+                // of the next restore or save.
+                progress = 0
+            }
+            updateKeepAwake()
+        }
+    }
+    // What isFlashing is busy with. The big button said "Flashing Cards..."
+    // while originals were only being read, and people unplugged the phone to
+    // stop what they thought was a write.
+    enum BusyJob { case flashCards, flashPasscode, readingOriginals, savingOriginal, restoring }
+    @Published var busyJob: BusyJob?
+    // Cards AirCard has written to on this phone: their original can no longer
+    // be saved, so they are not asked about before a flash.
+    @Published var flashedCards: Set<String> = []
+    // Cards the person chose to send without saving first, this session.
+    private var sendWithoutSaving: Set<String> = []
     @Published var progress: Double = 0.0
     @Published var statusText: String = "Ready"
     @Published var logs: [String] = []
@@ -843,6 +1498,15 @@ class AppViewModel: ObservableObject {
     private var scanProcess: Process?
     private let scriptDir: String
     private let storageKey = "mak5er.aircard.savedCards"
+    // Card numbers per phone. One shared list meant cards from one phone were
+    // ticked, given the same picture and sent to another.
+    private let perDeviceKey = "mak5er.aircard.cardsByDevice"
+    private var cardsByDevice: [String: [String]] = [:]
+    // The phone whose list is on screen.
+    private var shownCardsFor: String?
+    // Numbers saved before lists were kept per phone, or added before any
+    // phone was connected. They go to the next phone that connects.
+    private var unassignedCards: [String] = []
     private let legacyStorageKey1 = "mak5er.savedCards"
     private let legacyStorageKey2 = "LumiCards.savedCards"
     
@@ -852,6 +1516,9 @@ class AppViewModel: ObservableObject {
         try! NSRegularExpression(pattern: "(?<![A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{27}=)(?![A-Za-z0-9+/_-])")
     ]
     
+    // The one model, for the app delegate's quit check.
+    static weak var shared: AppViewModel?
+
     init() {
         let cwd = FileManager.default.currentDirectoryPath
         if let resPath = Bundle.main.resourcePath, FileManager.default.fileExists(atPath: resPath + "/aircard_backend.py") {
@@ -862,16 +1529,48 @@ class AppViewModel: ObservableObject {
             self.scriptDir = Bundle.main.bundleURL.deletingLastPathComponent().path
         }
         
+        Self.clearOldDesigns()
+        PasscodeThemeExporter.clearStagedThemes()
+        AppViewModel.shared = self
         loadSavedCards()
         checkDevice()
         startWatchingForDevice()
     }
     
+    // Kept on disk as well, dated: messages send people to the log, and it
+    // used to be undated and gone once the app quit. ~/Library/Logs is where
+    // Console and people looking for a log expect it.
+    nonisolated static var logFileURL: URL {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs/AirCard/AirCard.log")
+    }
+
+    // Past 2 MB the log starts again, keeping one previous file.
+    nonisolated static func appendToLogFile(_ line: String, at url: URL = logFileURL, limit: Int = 2_000_000) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil, size > limit {
+            let previous = url.deletingPathExtension().appendingPathExtension("1.log")
+            try? fm.removeItem(at: previous)
+            try? fm.moveItem(at: url, to: previous)
+        }
+        let data = Data((line + "\n").utf8)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
     func log(_ message: String) {
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let timestamp = formatter.string(from: Date())
-        logs.append("[\(timestamp)] \(message)")
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let line = "[\(formatter.string(from: Date()))] \(message)"
+        logs.append(line)
+        Self.appendToLogFile(line)
     }
     
     // /usr/bin/python3 is Apple's shim onto the Command Line Tools. It counts as
@@ -978,6 +1677,8 @@ class AppViewModel: ObservableObject {
     enum BackendFailure: Equatable {
         case xcodeLicence
         case commandLineTools
+        // xcode-select still points at an Xcode that has been deleted or moved.
+        case staleDeveloperPath
         case unknown
     }
 
@@ -986,12 +1687,36 @@ class AppViewModel: ObservableObject {
         if text.contains("agreed to the xcode") || text.contains("xcodebuild -license") {
             return .xcodeLicence
         }
+        if text.contains("invalid active developer path"), text.contains("xcode.app") || text.contains("xcode-beta.app") {
+            return .staleDeveloperPath
+        }
         if text.contains("invalid active developer path")
             || text.contains("command line tools")
             || text.contains("xcode-select") {
             return .commandLineTools
         }
         return .unknown
+    }
+
+    static func backendFailureMessage(_ failure: BackendFailure) -> String {
+        switch failure {
+        case .xcodeLicence:
+            return L("error.xcode_licence", "macOS is holding back a tool AirCard needs until the Xcode licence is accepted. Open Terminal, run \"sudo xcodebuild -license accept\", then click refresh.")
+        case .commandLineTools:
+            return L("error.command_line_tools", "AirCard needs Apple's Command Line Tools. Open Terminal, run \"xcode-select --install\", follow the installer, then click refresh.")
+        case .staleDeveloperPath:
+            return L("error.stale_developer_path", "This Mac is still set to use an Xcode that is no longer there. Open Terminal, run \"sudo xcode-select --reset\", then click refresh.")
+        case .unknown:
+            return L("error.backend_unavailable", "AirCard could not start its device tools. Reinstalling the app usually fixes this.")
+        }
+    }
+
+    // Lines of JSON the backend printed, and whether it printed any at all.
+    nonisolated static func jsonLines(_ data: Data?) -> [[String: Any]] {
+        let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        return text.split(separator: "\n").compactMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }
     }
 
     // Like runBackend, but keeps what the backend printed to stderr, since that
@@ -1094,21 +1819,65 @@ class AppViewModel: ObservableObject {
             "hwAtAmHKYwsQrJbT5cTNDsaxVME="
         ]
         loaded.removeAll { dummyHashes.contains($0) || ($0.contains("-") && $0.count == 36) }
-        
-        self.cards = loaded.map { CardItem(id: $0, isSelected: true) }
-        log("Loaded \(cards.count) real card(s) from storage.")
+
+        // Older versions saved pasted numbers as typed, quotes and brackets
+        // and all; those never matched a card. Cleaned the same way a paste is
+        // now, and written back once cleaned.
+        let cleaned = Self.cleanSavedHashes(loaded)
+        let stored = UserDefaults.standard.dictionary(forKey: perDeviceKey) as? [String: [String]] ?? [:]
+        cardsByDevice = stored.mapValues { Self.cleanSavedHashes($0) }
+        // Numbers already filed under a phone are not unassigned any more; the
+        // flat list is still written for older versions of AirCard.
+        let filed = Set(cardsByDevice.values.flatMap { $0 })
+        unassignedCards = cleaned.filter { !filed.contains($0) }
+        // Until a phone is known, only the unassigned ones can be shown.
+        self.cards = unassignedCards.map { CardItem(id: $0, isSelected: true) }
+        log("Loaded \(unassignedCards.count) unfiled and \(filed.count) filed card(s) from storage.")
     }
     
+    // The file each card is shown from: this phone's list, or the unassigned
+    // list while no phone is known. Two phones share the same card only if it
+    // really is on both.
+    nonisolated static func cardsForDevice(_ udid: String, store: [String: [String]], unassigned: [String])
+        -> (cards: [String], store: [String: [String]]) {
+        var list = store[udid] ?? []
+        for id in unassigned where !list.contains(id) { list.append(id) }
+        var updated = store
+        updated[udid] = list
+        return (list, updated)
+    }
+
     func saveCards() {
-        let hashes = cards.map { $0.id }
+        let current = cards.map { $0.id }
+        // With the phone unplugged, the list on screen is still that phone's:
+        // saved as unassigned, it would be handed to the next phone plugged in.
+        if let udid = device?.udid ?? shownCardsFor {
+            cardsByDevice[udid] = current
+        } else {
+            unassignedCards = current
+        }
+        UserDefaults.standard.set(cardsByDevice, forKey: perDeviceKey)
+        // The flat list keeps older versions of AirCard working after a downgrade.
+        var hashes: [String] = []
+        for id in cardsByDevice.values.flatMap({ $0 }) + unassignedCards where !hashes.contains(id) { hashes.append(id) }
         UserDefaults.standard.set(hashes, forKey: storageKey)
-        
+
         let jsonPath = NSString(string: "~/.aircard_cards.json").expandingTildeInPath
         if let data = try? JSONEncoder().encode(hashes) {
             try? data.write(to: URL(fileURLWithPath: jsonPath), options: .atomic)
         }
     }
     
+    nonisolated static func cleanSavedHashes(_ saved: [String]) -> [String] {
+        var out: [String] = []
+        for entry in saved {
+            for hash in parseCardHashes(entry).valid where !out.contains(hash) {
+                out.append(hash)
+            }
+        }
+        return out
+    }
+
     // Pulls card numbers out of whatever was pasted: bare, quoted, bracketed,
     // with a .pkpass ending, or as a full /Cards/... path. The old version kept
     // quotes and brackets as part of the number and dropped anything it did
@@ -1134,7 +1903,10 @@ class AppViewModel: ObservableObject {
         return (valid, invalid)
     }
 
-    func addCardHash(_ raw: String) {
+    // Returns what was not taken, so the sheet can keep it for correcting
+    // instead of closing on it.
+    @discardableResult
+    func addCardHash(_ raw: String) -> [String] {
         let parsed = AppViewModel.parseCardHashes(raw)
         var added = 0
         for id in parsed.valid where !cards.contains(where: { $0.id == id }) {
@@ -1150,10 +1922,14 @@ class AppViewModel: ObservableObject {
             log("Not a card number, skipped: \(parsed.invalid.joined(separator: ", "))")
             errorMessage = String(format: L("error.hashes_not_recognised", "Skipped because they do not look like a card hash: %@. A card hash is 20 to 44 letters and digits, like the ones a scan finds."), shown)
         }
+        return parsed.invalid
     }
     
     func deleteCard(id: String) {
+        guard !isFlashing else { return }
+        let old = cards.first { $0.id == id }?.customImageURL
         cards.removeAll { $0.id == id }
+        removeDesignFileIfUnused(old)
         saveCards()
         log("Removed card: \(id)")
     }
@@ -1204,12 +1980,14 @@ class AppViewModel: ObservableObject {
     // applying a blind centre crop, so framing is part of the normal path and
     // not something to find in a menu.
     func openDesigner(for cardId: String, image: NSImage?) {
+        guard !isFlashing else { return }
         designerSeed = image
         designingAllSelected = false
         designingCardID = cardId
     }
 
     func openDesignerForAllSelected(image: NSImage) {
+        guard !isFlashing else { return }
         designerSeed = image
         designingCardID = nil
         designingAllSelected = true
@@ -1222,16 +2000,16 @@ class AppViewModel: ObservableObject {
     }
 
     func applyCardDesign(_ design: CardFaceDesign, for cardIds: [String]) {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("aircard_design_\(UUID().uuidString).png")
+        guard !isFlashing else { return }
+        try? FileManager.default.createDirectory(at: Self.designsURL, withIntermediateDirectories: true)
+        let url = Self.designsURL.appendingPathComponent("\(UUID().uuidString).png")
         guard let image = design.render(),
-              let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]),
+              let png = Self.pngData(image),
               (try? png.write(to: url)) != nil else {
             errorMessage = L("error.design_save_failed", "The design could not be saved. Try again, or pick a different picture.")
             return
         }
+        let replaced = cards.filter { cardIds.contains($0.id) }.compactMap(\.customImageURL)
         for cardId in cardIds {
             setCardImage(for: cardId, url: url)
             // After setCardImage, which clears it for ordinary image changes.
@@ -1239,6 +2017,7 @@ class AppViewModel: ObservableObject {
                 cards[idx].design = design
             }
         }
+        for old in Set(replaced) { removeDesignFileIfUnused(old) }
         log("Designed a card face for \(cardIds.count) card(s).")
     }
 
@@ -1313,8 +2092,8 @@ class AppViewModel: ObservableObject {
         return parts.url
     }
 
-    // The last JSON line the importer printed. Anything else, including no
-    // output at all, reads as a file that could not be opened.
+    // The last JSON line the importer printed. No such line means the backend
+    // never ran, which is not the same as a file it could not open.
     nonisolated static func parseSkinImport(_ data: Data?) -> SkinImportResult {
         let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         for line in text.split(separator: "\n").reversed() {
@@ -1322,9 +2101,49 @@ class AppViewModel: ObservableObject {
                   let code = json["code"] as? String else { continue }
             return SkinImportResult(imported: json["imported"] as? [String] ?? [],
                                     skipped: json["skipped"] as? Int ?? 0,
+                                    duplicates: json["duplicates"] as? Int ?? 0,
+                                    encrypted: json["encrypted"] as? Int ?? 0,
+                                    unsupported: json["unsupported"] as? Int ?? 0,
+                                    overLimit: json["over_limit"] as? Int ?? 0,
                                     code: code)
         }
-        return SkinImportResult(code: "skins.unreadable")
+        return SkinImportResult(code: "skins.no_output")
+    }
+
+    // One line per kind of outcome. A locked zip, a pack past the limit and a
+    // picture already there each need a different next step; lumping them in
+    // with "not a picture, or too big" sent people converting pictures that
+    // were fine. Lines, not joined fragments, so each language keeps its own
+    // sentence order.
+    nonisolated static func skinImportLines(_ r: SkinImportResult, unreadable: Int) -> (lines: [String], isError: Bool) {
+        let added = r.imported.count
+        var lines: [String] = []
+        if added > 0 {
+            lines.append(String(format: L("skins.added", "Added %d to the library."), added))
+        }
+        let otherReasons = r.skipped + r.encrypted + r.unsupported + r.overLimit + unreadable
+        if r.duplicates > 0 {
+            lines.append(added == 0 && otherReasons == 0
+                ? L("skins.all_already_there", "Everything in it is already in the library.")
+                : String(format: L("skins.some_already_there", "%d were already in the library."), r.duplicates))
+        }
+        if r.encrypted > 0 {
+            lines.append(String(format: L("skins.skipped_locked", "%d are in a password-protected zip. Open it in Finder with its password, then add the folder it makes."), r.encrypted))
+        }
+        if r.unsupported > 0 {
+            lines.append(String(format: L("skins.skipped_unsupported", "%d are packed in a way AirCard cannot unpack. Double-click the zip in Finder, then add the folder it makes."), r.unsupported))
+        }
+        if r.overLimit > 0 {
+            lines.append(String(format: L("skins.skipped_over_limit", "%d more were left out, because one import takes up to 400 pictures. Add the rest separately."), r.overLimit))
+        }
+        if added == 0 && r.duplicates == 0 && r.encrypted == 0 && r.unsupported == 0 && r.overLimit == 0 {
+            lines.append(unreadable > 0 && r.skipped == 0
+                ? L("skins.unreadable", "That file could not be opened. If it is a zip, double-click it in Finder to check it is not damaged.")
+                : L("skins.none_found", "No card pictures were found. They need to be PNG, JPEG, HEIC or WebP files."))
+        } else if r.skipped + unreadable > 0 {
+            lines.append(String(format: L("skins.skipped_other", "%d skipped: not a picture, or too big."), r.skipped + unreadable))
+        }
+        return (lines, added == 0 && r.duplicates == 0)
     }
 
     static func skinDownloadMessage(_ failure: SkinDownloader.Failure) -> String {
@@ -1337,15 +2156,39 @@ class AppViewModel: ObservableObject {
             return L("skins.link_too_large", "The download was stopped at 400 MB. A card pack is far smaller than that, so check the link points to the right file.")
         case .network(let reason):
             return String(format: L("skins.download_failed", "The download did not finish: %@"), reason)
+        case .needsBrowser(let reason):
+            return String(format: L("skins.use_browser", "AirCard could not download this link itself. Open it in your browser, download the file, then drop it here. (%@)"), reason)
         case .cancelled:
             return L("skins.download_cancelled", "Download cancelled.")
         }
     }
 
+    // Pictures a folder would bring in, counted the way the importer walks it:
+    // no hidden files, nothing inside apps or photo libraries. Stops counting at
+    // the limit, since past that the answer is "a lot".
+    nonisolated static func picturesIn(folder: URL, limit: Int = 5000) -> Int {
+        guard let walk = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return 0 }
+        let kinds: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "webp"]
+        var count = 0
+        var seen = 0
+        for case let url as URL in walk {
+            seen += 1
+            if seen > limit { break }
+            if kinds.contains(url.pathExtension.lowercased()) { count += 1 }
+        }
+        return count
+    }
+
     func openSkinLibrary(for cardId: String?) {
+        guard !isFlashing else { return }
         skinLibraryCardID = cardId
         skinChosenFromLibrary = nil
-        if !isImportingSkins { skinLibraryNote = nil }
+        // A result that came in while the library was closed is shown once
+        // more, rather than wiped before anyone saw it.
+        if !isImportingSkins && !isDownloadingSkins && !skinNoteUnseen { skinLibraryNote = nil }
+        skinNoteUnseen = false
         showSkinLibrary = true
         loadSkinLibrary()
     }
@@ -1356,13 +2199,18 @@ class AppViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
                 .filter { !$0.hasPrefix(".") && AppViewModel.skinFileExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
-            let items = AppViewModel.orderSkinNames(names, recent: recent)
-                .map { SkinLibraryItem(url: dir.appendingPathComponent($0)) }
+            let items = AppViewModel.orderSkinNames(names, recent: recent).map { name -> SkinLibraryItem in
+                let url = dir.appendingPathComponent(name)
+                let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                let stamp = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
+                return SkinLibraryItem(url: url, version: "\(stamp)-\(values?.fileSize ?? 0)")
+            }
             await MainActor.run { self.skinLibrary = items }
         }
     }
 
     func chooseSkin(_ image: NSImage) {
+        guard !isFlashing else { return }
         skinChosenFromLibrary = image
         showSkinLibrary = false
     }
@@ -1390,60 +2238,129 @@ class AppViewModel: ObservableObject {
             try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
             skinLibrary.removeAll { $0.id == item.id }
         } catch {
-            skinLibraryNote = SkinLibraryNote(text: error.localizedDescription, isError: true)
+            reportSkinOutcome(SkinLibraryNote(text: error.localizedDescription, isError: true))
             loadSkinLibrary()
         }
     }
 
+    // Results land in the sheet. If it was closed meanwhile, the main status
+    // line says it too, a failure also as an alert, and the sheet keeps the
+    // note for the next time it opens.
+    func reportSkinOutcome(_ note: SkinLibraryNote) {
+        skinLibraryNote = note
+        guard !showSkinLibrary else { return }
+        skinNoteUnseen = true
+        statusText = note.text
+        if note.isError { errorMessage = note.text }
+    }
+
+    // Folders get a look before anything is copied: clicking Open one level
+    // too high in the file chooser picks all of Downloads.
+    func importSkinsAfterConfirming(_ sources: [URL]) {
+        let folders = sources.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+        let inFolders = folders.reduce(0) { $0 + Self.picturesIn(folder: $1) }
+        if inFolders > Self.folderImportConfirmAbove {
+            let alert = NSAlert()
+            alert.messageText = String(format: L("skins.folder_confirm_title", "Add %d pictures to the library?"), inFolders)
+            alert.informativeText = L("skins.folder_confirm_body", "Everything that is a picture in this folder and the folders inside it will be copied into the library.")
+            alert.addButton(withTitle: L("skins.folder_confirm_add", "Add Them"))
+            alert.addButton(withTitle: L("ui.cancel", "Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        importSkins(from: sources)
+    }
+
+    nonisolated static let folderImportConfirmAbove = 30
+
+    // Imports run one at a time. A second request while one runs (a drop
+    // during a download, say) waits its turn instead of being dropped, which
+    // used to throw away the downloaded pack. Everything that runs back to back
+    // is reported together at the end.
     func importSkins(from sources: [URL], cleaningUp temporary: URL? = nil) {
-        guard !isImportingSkins, !sources.isEmpty else {
+        guard !sources.isEmpty else {
             if let temporary { try? FileManager.default.removeItem(at: temporary) }
             return
         }
+        if isImportingSkins {
+            pendingSkinImports.append((sources, temporary))
+            return
+        }
         isImportingSkins = true
-        skinLibraryNote = SkinLibraryNote(text: L("skins.importing", "Adding to the library..."))
+        skinProgress = L("skins.importing", "Adding to the library...")
         let scriptDir = self.scriptDir
         let library = Self.skinLibraryURL.path
         Task.detached {
             var total = SkinImportResult()
             var unreadable = 0
+            var setup: AppViewModel.BackendFailure?
+            var toolMissing = false
             for source in sources {
-                let data = AppViewModel.runBackend(["aircard_backend.py", "--import-skins", source.path, library], scriptDir: scriptDir)
-                let result = AppViewModel.parseSkinImport(data)
-                total.imported += result.imported
-                total.skipped += result.skipped
+                let run = AppViewModel.runBackendDiagnosing(["aircard_backend.py", "--import-skins", source.path, library], scriptDir: scriptDir)
+                let result = AppViewModel.parseSkinImport(run.out)
+                if result.code == "skins.no_output" {
+                    // The backend never answered: say what is missing on this
+                    // Mac, not that the person's zip is damaged.
+                    let failure = AppViewModel.diagnoseBackendFailure(run.err)
+                    if failure == .unknown { toolMissing = true } else { setup = failure }
+                    break
+                }
+                total.add(result)
                 if result.code == "skins.unreadable" || result.code == "skins.not_found" { unreadable += 1 }
             }
             if let temporary { try? FileManager.default.removeItem(at: temporary) }
-            let result = total, failed = unreadable
+            let result = total, failed = unreadable, setupFailure = setup, noTool = toolMissing
             await MainActor.run {
                 self.isImportingSkins = false
-                self.finishSkinImport(result, unreadable: failed)
+                self.finishSkinImport(result, unreadable: failed, setup: setupFailure, toolMissing: noTool)
             }
         }
     }
 
-    private func finishSkinImport(_ result: SkinImportResult, unreadable: Int) {
-        let added = result.imported.count
-        let left = result.skipped + unreadable
-        log("Skin library: added \(added), skipped \(result.skipped), unreadable \(unreadable).")
-        if added > 0 {
-            recentSkinImports = result.imported + recentSkinImports.filter { !result.imported.contains($0) }
-            skinLibraryNote = SkinLibraryNote(text: left == 0
-                ? String(format: L("skins.added", "Added %d to the library."), added)
-                : String(format: L("skins.added_some_skipped", "Added %1$d to the library. %2$d skipped: not a picture, or too big."), added, left))
-        } else if unreadable > 0 && result.skipped == 0 {
-            skinLibraryNote = SkinLibraryNote(text: L("skins.unreadable", "That file could not be opened. If it is a zip, double-click it in Finder to check it is not damaged."), isError: true)
-        } else {
-            skinLibraryNote = SkinLibraryNote(text: L("skins.none_found", "No card pictures were found. They need to be PNG, JPEG, HEIC or WebP files."), isError: true)
-        }
+    private func finishSkinImport(_ result: SkinImportResult, unreadable: Int, setup: BackendFailure?, toolMissing: Bool) {
+        log("Skin library: added \(result.imported.count), duplicates \(result.duplicates), skipped \(result.skipped), locked \(result.encrypted), unsupported \(result.unsupported), over limit \(result.overLimit), unreadable \(unreadable).")
+        recentSkinImports = result.imported + recentSkinImports.filter { !result.imported.contains($0) }
+        batchSkinResult.add(result)
+        batchSkinUnreadable += unreadable
         loadSkinLibrary()
+
+        if setup != nil || toolMissing {
+            // Nothing queued can work either; clear it and say why once.
+            for pending in pendingSkinImports {
+                if let temporary = pending.temporary { try? FileManager.default.removeItem(at: temporary) }
+            }
+            pendingSkinImports.removeAll()
+            batchSkinResult = SkinImportResult()
+            batchSkinUnreadable = 0
+            skinProgress = nil
+            let text: String
+            switch setup {
+            case .xcodeLicence:
+                text = L("error.xcode_licence", "macOS is holding back a tool AirCard needs until the Xcode licence is accepted. Open Terminal, run \"sudo xcodebuild -license accept\", then click refresh.")
+            case .commandLineTools:
+                text = L("error.command_line_tools", "AirCard needs Apple's Command Line Tools. Open Terminal, run \"xcode-select --install\", follow the installer, then click refresh.")
+            default:
+                text = L("skins.tool_failed", "AirCard could not start the part that adds pictures to the library. Reinstalling the app usually fixes this.")
+            }
+            reportSkinOutcome(SkinLibraryNote(text: text, isError: true))
+            return
+        }
+
+        if !pendingSkinImports.isEmpty {
+            let next = pendingSkinImports.removeFirst()
+            importSkins(from: next.sources, cleaningUp: next.temporary)
+            return
+        }
+        let summary = Self.skinImportLines(batchSkinResult, unreadable: batchSkinUnreadable)
+        batchSkinResult = SkinImportResult()
+        batchSkinUnreadable = 0
+        skinProgress = nil
+        reportSkinOutcome(SkinLibraryNote(text: summary.lines.joined(separator: "\n"), isError: summary.isError))
     }
 
     func downloadSkins(from text: String) {
-        guard !isImportingSkins, !isDownloadingSkins else { return }
+        guard !isDownloadingSkins else { return }
         guard let url = Self.skinDownloadURL(text) else {
-            skinLibraryNote = SkinLibraryNote(text: L("skins.bad_link", "That does not look like a link. Paste the whole address, starting with https://"), isError: true)
+            reportSkinOutcome(SkinLibraryNote(text: L("skins.bad_link", "That does not look like a link. Paste the whole address, starting with https://"), isError: true))
             return
         }
         let folder = FileManager.default.temporaryDirectory
@@ -1451,10 +2368,11 @@ class AppViewModel: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } catch {
-            skinLibraryNote = SkinLibraryNote(text: Self.skinDownloadMessage(.network(error.localizedDescription)), isError: true)
+            reportSkinOutcome(SkinLibraryNote(text: Self.skinDownloadMessage(.network(error.localizedDescription)), isError: true))
             return
         }
         isDownloadingSkins = true
+        skinLibraryNote = nil
         showDownloadProgress(0)
         log("Downloading skins from \(url.host ?? "a link")...")
         var shown: Int64 = 0
@@ -1472,11 +2390,13 @@ class AppViewModel: ObservableObject {
             self.isDownloadingSkins = false
             switch result {
             case .success(let file):
+                self.skinDownloadSucceeded += 1
                 self.importSkins(from: [file], cleaningUp: folder)
             case .failure(let failure):
                 try? FileManager.default.removeItem(at: folder)
                 if case .status(let code) = failure { self.log("  The link answered HTTP \(code).") }
-                self.skinLibraryNote = SkinLibraryNote(text: Self.skinDownloadMessage(failure), isError: failure != .cancelled)
+                if !self.isImportingSkins { self.skinProgress = nil }
+                self.reportSkinOutcome(SkinLibraryNote(text: Self.skinDownloadMessage(failure), isError: failure != .cancelled))
             }
         })
         skinDownload = download
@@ -1489,14 +2409,85 @@ class AppViewModel: ObservableObject {
 
     private func showDownloadProgress(_ bytes: Int64) {
         let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-        skinLibraryNote = SkinLibraryNote(text: String(format: L("skins.downloading", "Downloading... %@"), size))
+        skinProgress = String(format: L("skins.downloading", "Downloading... %@"), size)
+    }
+
+    // A zip or folder dropped on a card goes into the library, which then
+    // opens on that card: dropped there before, it was taken and nothing
+    // happened.
+    func importDroppedPack(_ url: URL, for cardId: String) {
+        guard !isFlashing else { return }
+        openSkinLibrary(for: cardId)
+        importSkinsAfterConfirming([url])
+    }
+
+    // MARK: - Designs on disk
+
+    // Rendered card faces. Kept out of the temp folder, which macOS clears of
+    // files left alone for about three days: a design made on Monday in an app
+    // left open failed to send on Thursday. Only card numbers are saved between
+    // launches, so what is here belongs to one run and is cleared at the next.
+    nonisolated static var designsURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AirCard/Designs", isDirectory: true)
+    }
+
+    nonisolated static func clearOldDesigns() {
+        try? FileManager.default.removeItem(at: designsURL)
+    }
+
+    // A design file can be shared by every card it was applied to at once.
+    private func removeDesignFileIfUnused(_ url: URL?) {
+        guard let url, url.path.hasPrefix(Self.designsURL.path + "/"),
+              !cards.contains(where: { $0.customImageURL == url }) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    // Before sending: any card whose artwork file has gone is written out again
+    // from its design, or from the picture it shows, rather than failing.
+    func restoreMissingArtwork() {
+        for idx in cards.indices where cards[idx].isSelected {
+            guard let url = cards[idx].customImageURL, !FileManager.default.fileExists(atPath: url.path) else { continue }
+            let image = cards[idx].design?.render() ?? cards[idx].customImage
+            guard let image, let png = Self.pngData(image) else { continue }
+            try? FileManager.default.createDirectory(at: Self.designsURL, withIntermediateDirectories: true)
+            let fresh = Self.designsURL.appendingPathComponent("\(UUID().uuidString).png")
+            if (try? png.write(to: fresh)) != nil {
+                cards[idx].customImageURL = fresh
+                log("Wrote card \(idx + 1)'s artwork again; its file had been removed.")
+            }
+        }
+    }
+
+    nonisolated static func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    // Held while anything is going on that the Mac sleeping would break: a
+    // flash, a scan waiting on taps at the phone, a download. The person's
+    // hands are on the iPhone, so a MacBook on battery reached its idle sleep
+    // mid-flash.
+    func updateKeepAwake() {
+        let busy = isFlashing || isScanningCards || isDownloadingSkins || isImportingSkins
+        if busy, awakeActivity == nil {
+            awakeActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .idleSystemSleepDisabled],
+                reason: "AirCard is working with the iPhone")
+        } else if !busy, let activity = awakeActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            awakeActivity = nil
+        }
     }
 
     func clearCardImage(for cardId: String) {
+        guard !isFlashing else { return }
         if let idx = cards.firstIndex(where: { $0.id == cardId }) {
+            let old = cards[idx].customImageURL
             cards[idx].customImageURL = nil
             cards[idx].customImage = nil
             cards[idx].design = nil
+            removeDesignFileIfUnused(old)
             log("Cleared custom skin for: \(cardId.prefix(12))...")
         }
     }
@@ -1543,7 +2534,14 @@ class AppViewModel: ObservableObject {
     // looked at again when the person comes back to the app.
     nonisolated static func shouldLookForDevice(fromTimer: Bool, hasDevice: Bool, busy: Bool,
                                                 lastState: String, appActive: Bool) -> Bool {
-        if hasDevice || busy { return false }
+        if busy { return false }
+        // With a phone set, only a return to the app looks again: it may have
+        // been unplugged or swapped meanwhile, and the header kept naming it.
+        if hasDevice { return !fromTimer }
+        // Known broken setup: running the python3 shim again only puts Apple's
+        // "install developer tools" dialog back up, every few seconds and at
+        // every return to the window. Only a deliberate Check Again retries.
+        if lastState.hasPrefix("backend:") { return false }
         if fromTimer && (lastState == "untrusted" || !appActive) { return false }
         return true
     }
@@ -1567,15 +2565,18 @@ class AppViewModel: ObservableObject {
                 let list = response?.devices ?? []
                 self.devices = list
                 self.awaitingTrust = false
+                self.helperFailed = response?.error?.hasPrefix("helper_") == true
 
                 guard !list.isEmpty else {
                     self.device = nil
                     self.backedUpCards = []
                     self.isCheckingDevice = false
                     let state: String
+                    self.backendFailure = response == nil ? failure : nil
                     if response == nil { state = "backend:\(failure)" }
                     else if (response?.untrusted ?? 0) > 0 { state = "untrusted" }
                     else if response?.error == "device_helper_missing" { state = "helper-missing" }
+                    else if response?.error?.hasPrefix("helper_") == true { state = "helper-failed" }
                     else { state = "none" }
                     self.awaitingTrust = (state == "untrusted")
                     // The watch repeats this every few seconds. Say something only
@@ -1588,14 +2589,7 @@ class AppViewModel: ObservableObject {
                         // Saying "no iPhone" sends people to replug a phone that
                         // was never the problem; say what is actually missing.
                         self.statusText = L("status.detection_could_not_run", "Device detection could not run. See the log.")
-                        switch failure {
-                        case .xcodeLicence:
-                            self.errorMessage = L("error.xcode_licence", "macOS is holding back a tool AirCard needs until the Xcode licence is accepted. Open Terminal, run \"sudo xcodebuild -license accept\", then click refresh.")
-                        case .commandLineTools:
-                            self.errorMessage = L("error.command_line_tools", "AirCard needs Apple's Command Line Tools. Open Terminal, run \"xcode-select --install\", follow the installer, then click refresh.")
-                        case .unknown:
-                            self.errorMessage = L("error.backend_unavailable", "AirCard could not start its device tools. Reinstalling the app usually fixes this.")
-                        }
+                        self.errorMessage = AppViewModel.backendFailureMessage(failure)
                         self.log("Device detection returned nothing usable. \(errorTail.isEmpty ? "(no error output)" : errorTail)")
                     } else if state == "untrusted" {
                         // Seen at all means the Mac already let the data through,
@@ -1605,21 +2599,42 @@ class AppViewModel: ObservableObject {
                     } else if response?.error == "device_helper_missing" {
                         self.statusText = L("status.device_tools_are_missing_from", "Device tools are missing from this build.")
                         self.log("Bundled device_helper not found — detection cannot run.")
+                    } else if state == "helper-failed" {
+                        // The helper crashed, hung or was stopped: a problem on the
+                        // Mac, which a different cable would never fix.
+                        self.statusText = L("status.helper_not_responding", "AirCard's device tools did not respond. Unplug the iPhone, plug it back in, then click Check Again. If this keeps happening, restart the Mac.")
+                        self.log("Device helper failed (\(response?.error ?? "")). \(errorTail)")
                     } else {
                         // Not seen at all. On a Mac that asks before letting a new
                         // accessory's data through, the phone cannot show Trust
                         // until someone clicks Allow on the Mac, and nothing on
                         // the phone says so.
-                        self.statusText = L("status.no_iphone_allow_accessory", "No iPhone found. Use a cable that carries data, not a charge-only one. If your Mac asks whether to allow the accessory to connect, click Allow.")
+                        self.statusText = L("status.no_iphone_unlock_first", "No iPhone found. Unlock your iPhone and keep it unlocked while it connects: a phone locked for a while offers no data over USB. Use a cable that carries data, and if your Mac asks whether to allow the accessory, click Allow.")
                     }
                     return
                 }
                 self.lastDeviceState = "connected"
+                self.backendFailure = nil
 
-                // Stay on the current device if it is still attached, otherwise take
-                // the top of the list (cabled iPhone leads).
+                // A quiet look (coming back to the window) that finds the same
+                // phone still there changes nothing, and must not overwrite the
+                // status line with "Connected to...".
                 let keep = self.device?.udid
-                let target = list.first(where: { $0.udid == keep })?.udid ?? list.first?.udid
+                if quiet, let keep, list.contains(where: { $0.udid == keep }) {
+                    self.isCheckingDevice = false
+                    return
+                }
+                // Stay on the current device if it is still attached, otherwise
+                // the first iPhone (cabled ones lead). An iPad or other device is
+                // never picked on its own; it can still be chosen from the menu.
+                guard let target = AppViewModel.pickDevice(from: list, current: keep) else {
+                    self.device = nil
+                    self.backedUpCards = []
+                    self.isCheckingDevice = false
+                    let names = list.map { $0.name ?? $0.product ?? "?" }.joined(separator: ", ")
+                    self.statusText = String(format: L("status.no_iphone_among_devices", "AirCard sees %@, but no iPhone. Connect your iPhone with a cable."), names)
+                    return
+                }
                 if list.count > 1 {
                     let name = list.first(where: { $0.udid == target })?.name ?? "iPhone"
                     self.log("\(list.count) devices connected, using \(name). Switch from the device menu if this is the wrong one.")
@@ -1627,6 +2642,13 @@ class AppViewModel: ObservableObject {
                 self.selectDevice(target, isInitial: true)
             }
         }
+    }
+
+    // The device to use: the current one while it is still there, otherwise
+    // the first iPhone in the list, which the backend orders cabled first.
+    nonisolated static func pickDevice(from list: [DeviceInfo], current: String?) -> String? {
+        if let current, list.contains(where: { $0.udid == current }) { return current }
+        return list.first(where: { ($0.product ?? "").hasPrefix("iPhone") })?.udid
     }
 
     // Switches the active device and re-reads its preferences and airlift status.
@@ -1643,6 +2665,7 @@ class AppViewModel: ObservableObject {
         // clear on first launch, which keeps the restored saved cards.
         if let current = device?.udid, current != udid {
             if isScanningCards { stopCardScanning() }
+            saveCards()
             cards.removeAll()
         }
 
@@ -1658,8 +2681,33 @@ class AppViewModel: ObservableObject {
                 // Only accept the exact device we asked for. A substituted one would
                 // silently point scan and flash at the wrong iPhone.
                 if let dev = dev, dev.connected, dev.udid == udid {
+                    let changed = self.shownCardsFor != udid
                     self.device = dev
-                    self.statusText = String(format: L("status.connected_to", "Connected to %@"), dev.name ?? "iPhone")
+                    if changed {
+                        // This phone's own cards, plus any not yet filed anywhere.
+                        let pending = self.unassignedCards + self.cards.map(\.id).filter { !self.unassignedCards.contains($0) }
+                        let picked = AppViewModel.cardsForDevice(udid, store: self.cardsByDevice, unassigned: pending)
+                        self.cardsByDevice = picked.store
+                        self.unassignedCards = []
+                        let designs = Dictionary(self.cards.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                        self.cards = picked.cards.map { designs[$0] ?? CardItem(id: $0, isSelected: true) }
+                        self.shownCardsFor = udid
+                        self.saveCards()
+                    }
+                    // The file-access probe was run and then ignored: a device AirCard
+                    // cannot write to showed green, and everything failed later with
+                    // advice about cables. Said now, in orange; nothing is blocked,
+                    // in case the probe is wrong.
+                    if !(dev.product ?? "").hasPrefix("iPhone") {
+                        self.deviceWarning = true
+                        self.statusText = L("status.not_an_iphone", "This is not an iPhone. AirCard changes Wallet cards on an iPhone; choose one from the device menu.")
+                    } else if dev.airlift_compatible == false {
+                        self.deviceWarning = true
+                        self.statusText = L("status.files_unreachable", "Connected, but AirCard cannot reach this iPhone's files yet. Unlock it, keep it plugged in, then click refresh.")
+                    } else {
+                        self.deviceWarning = false
+                        self.statusText = String(format: L("status.connected_to", "Connected to %@"), dev.name ?? "iPhone")
+                    }
                     self.log("Device \(isInitial ? "connected" : "selected"): \(dev.name ?? "iPhone") (\(dev.product ?? ""), iOS \(dev.version ?? ""))")
                     // Only for a phone not set up yet: a refresh of the same phone
                     // must not undo a choice made by hand in the target settings.
@@ -1671,7 +2719,7 @@ class AppViewModel: ObservableObject {
                     self.device = nil
                     self.backedUpCards = []
                     if isInitial {
-                        self.statusText = L("status.no_iphone_allow_accessory", "No iPhone found. Use a cable that carries data, not a charge-only one. If your Mac asks whether to allow the accessory to connect, click Allow.")
+                        self.statusText = L("status.no_iphone_unlock_first", "No iPhone found. Unlock your iPhone and keep it unlocked while it connects: a phone locked for a while offers no data over USB. Use a cable that carries data, and if your Mac asks whether to allow the accessory, click Allow.")
                     } else {
                         self.statusText = L("status.selected_iphone_is_no_longer", "Selected iPhone is no longer connected.")
                         self.log("Selected device is no longer available. Reconnect it and refresh.")
@@ -1700,8 +2748,12 @@ class AppViewModel: ObservableObject {
                 if let image = NSImage(contentsOfFile: path) { previews[card] = image }
             }
             await MainActor.run {
+                // The phone was switched while this was running: its answer
+                // belongs to the other phone and would mix the lists.
+                guard self.device?.udid == udid else { return }
                 let saved = list?.cards ?? []
                 self.backedUpCards = Set(saved)
+                self.flashedCards = Set(list?.flashed ?? [])
                 self.originalPreviews = previews
                 // A card can only be restored from its row. If it was removed from
                 // the list, or the list was cleared, its saved original would sit
@@ -1746,22 +2798,32 @@ class AppViewModel: ObservableObject {
     }
 
     func backupCard(id: String) {
-        guard let udid = device?.udid, !isFlashing else { return }
+        guard !isFlashing else { return }
+        guard let udid = device?.udid else {
+            errorMessage = L("error.no_iphone_connected", "No iPhone connected.")
+            return
+        }
         // Clear last time's error, or it outlives the run that caused it.
         errorMessage = nil
         isFlashing = true
+        busyJob = .savingOriginal
         showLogs = true
         statusText = L("status.backing_up", "Saving original artwork...")
         let scriptDir = self.scriptDir
         Task.detached {
-            let data = AppViewModel.runBackend(["aircard_backend.py", "--backup", udid, id], scriptDir: scriptDir)
-            let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let run = AppViewModel.runBackendDiagnosing(["aircard_backend.py", "--backup", udid, id], scriptDir: scriptDir)
+            let lines = AppViewModel.jsonLines(run.out)
+            let failure = AppViewModel.diagnoseBackendFailure(run.err)
             await MainActor.run {
                 self.isFlashing = false
-                for line in text.split(separator: "\n") {
-                    guard let d = line.data(using: .utf8),
-                          let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                          let msg = json["message"] as? String else { continue }
+                if lines.isEmpty {
+                    // Python never ran; the status line must not keep saying "Saving".
+                    self.errorMessage = AppViewModel.backendFailureMessage(failure)
+                    self.statusText = L("status.backup_failed", "Could not save the original artwork")
+                    self.log("Save Original got no answer from the backend. \(run.err.suffix(300))")
+                }
+                for json in lines {
+                    guard let msg = json["message"] as? String else { continue }
                     self.log("  \(msg)")
                     if (json["type"] as? String) == "success" {
                         self.statusText = L("status.backup_saved", "Original artwork saved")
@@ -1791,12 +2853,15 @@ class AppViewModel: ObservableObject {
         errorMessage = nil
         let scriptDir = self.scriptDir
         Task.detached {
-            let data = AppViewModel.runBackend(["aircard_backend.py", "--discard-backup", udid, id], scriptDir: scriptDir)
-            let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let run = AppViewModel.runBackendDiagnosing(["aircard_backend.py", "--discard-backup", udid, id], scriptDir: scriptDir)
+            let lines = AppViewModel.jsonLines(run.out)
+            let failure = AppViewModel.diagnoseBackendFailure(run.err)
             await MainActor.run {
-                if text.contains("\"backup.discarded\"") {
+                if lines.contains(where: { $0["code"] as? String == "backup.discarded" }) {
                     self.statusText = L("status.backup_discarded", "Saved original removed")
                     self.log("Discarded the saved original for \(id.prefix(12))...")
+                } else if lines.isEmpty {
+                    self.errorMessage = AppViewModel.backendFailureMessage(failure)
                 } else {
                     self.errorMessage = AppViewModel.originalArtworkMessage(code: "backup.discard_failed")
                 }
@@ -1810,39 +2875,70 @@ class AppViewModel: ObservableObject {
     // card's artwork moves the file off the card and puts it back, and that is
     // worth doing when the person asks, not quietly for every card found.
     func readAllOriginals() {
-        guard let udid = device?.udid, !isFlashing, !isScanningCards else { return }
+        guard device?.udid != nil, !isFlashing, !isScanningCards else { return }
         let todo = cards.map(\.id).filter { !backedUpCards.contains($0) }
         guard !todo.isEmpty else { return }
+        readOriginals(of: todo, then: nil)
+    }
+
+    // What a read of several originals says. Every count is its own: one
+    // already-changed card used to make the others, which had only failed
+    // while the phone locked, read as lost for good.
+    nonisolated static func originalsReadMessage(read: Int, total: Int, alreadyChanged: Int, failed: Int) -> String {
+        switch (alreadyChanged > 0, failed > 0) {
+        case (true, true):
+            return String(format: L("status.originals_read_mixed", "Originals read: %1$d of %2$d. %3$d were already changed by AirCard, so their originals are not on the phone. For the other %4$d, unlock the iPhone and try again."), read, total, alreadyChanged, failed)
+        case (true, false):
+            return String(format: L("status.originals_read_changed", "Originals read: %1$d of %2$d. %3$d were already changed by AirCard, so their originals are not on the phone."), read, total, alreadyChanged)
+        case (false, true):
+            return String(format: L("status.originals_read_some_failed", "Originals read: %1$d of %2$d. Unlock the iPhone and try again for the rest."), read, total)
+        case (false, false):
+            return String(format: L("status.originals_read", "Originals read: %1$d of %2$d."), read, total)
+        }
+    }
+
+    // Reads and saves the originals of these cards, then runs `then` on the
+    // main actor (the flash that asked for it, say). Stops at once, and says
+    // why, if the backend cannot run at all.
+    func readOriginals(of todo: [String], then: (() -> Void)?) {
+        guard let udid = device?.udid, !isFlashing else { return }
         errorMessage = nil
         isFlashing = true
+        busyJob = .readingOriginals
         showLogs = true
         progress = 0
         let scriptDir = self.scriptDir
         Task.detached {
             var read = 0, alreadyChanged = 0, failed = 0
+            var broken: AppViewModel.BackendFailure?
             for (i, id) in todo.enumerated() {
                 await MainActor.run {
                     self.statusText = String(format: L("status.reading_originals", "Reading original designs [%1$d/%2$d]..."), i + 1, todo.count)
                     self.progress = Double(i) / Double(todo.count)
                 }
-                let data = AppViewModel.runBackend(["aircard_backend.py", "--backup", udid, id], scriptDir: scriptDir)
-                let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                if text.contains("\"backup.done\"") || text.contains("\"backup.exists\"") { read += 1 }
-                else if text.contains("\"backup.already_changed\"") { alreadyChanged += 1 }
+                let run = AppViewModel.runBackendDiagnosing(["aircard_backend.py", "--backup", udid, id], scriptDir: scriptDir)
+                let codes = AppViewModel.jsonLines(run.out).compactMap { $0["code"] as? String }
+                if codes.isEmpty {
+                    broken = AppViewModel.diagnoseBackendFailure(run.err)
+                    break
+                }
+                if codes.contains("backup.done") || codes.contains("backup.exists") { read += 1 }
+                else if codes.contains("backup.already_changed") { alreadyChanged += 1 }
                 else { failed += 1 }
             }
+            let summary = (read, alreadyChanged, failed, broken)
             await MainActor.run {
                 self.isFlashing = false
                 self.progress = 0
-                if alreadyChanged > 0 {
-                    self.statusText = String(format: L("status.originals_read_some_changed", "Originals read: %1$d of %2$d. The rest were already changed by AirCard, so their originals are not on the phone."), read, todo.count)
-                } else if failed > 0 {
-                    self.statusText = String(format: L("status.originals_read_some_failed", "Originals read: %1$d of %2$d. Unlock the iPhone and try again for the rest."), read, todo.count)
+                if let broken = summary.3 {
+                    self.errorMessage = AppViewModel.backendFailureMessage(broken)
+                    self.statusText = L("status.backup_failed", "Could not save the original artwork")
                 } else {
-                    self.statusText = String(format: L("status.originals_read", "Originals read: %1$d of %2$d."), read, todo.count)
+                    self.statusText = AppViewModel.originalsReadMessage(read: summary.0, total: todo.count, alreadyChanged: summary.1, failed: summary.2)
                 }
-                self.log("Read originals: \(read) read, \(alreadyChanged) already changed, \(failed) failed.")
+                self.log("Read originals: \(summary.0) read, \(summary.1) already changed, \(summary.2) failed.")
                 self.loadBackups()
+                if summary.3 == nil { then?() }
             }
         }
     }
@@ -1855,19 +2951,22 @@ class AppViewModel: ObservableObject {
         }
         errorMessage = nil
         isFlashing = true
+        busyJob = .restoring
         showLogs = true
         statusText = L("status.restoring", "Restoring original artwork...")
         let scriptDir = self.scriptDir
         Task.detached {
-            let data = AppViewModel.runBackend(["aircard_backend.py", "--restore", udid, id], scriptDir: scriptDir)
-            let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let run = AppViewModel.runBackendDiagnosing(["aircard_backend.py", "--restore", udid, id], scriptDir: scriptDir)
+            let lines = AppViewModel.jsonLines(run.out)
+            let failure = AppViewModel.diagnoseBackendFailure(run.err)
             await MainActor.run {
                 self.isFlashing = false
                 var restored = false
-                for line in text.split(separator: "\n") {
-                    guard let d = line.data(using: .utf8),
-                          let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                          let msg = json["message"] as? String else { continue }
+                if lines.isEmpty {
+                    self.errorMessage = AppViewModel.backendFailureMessage(failure)
+                }
+                for json in lines {
+                    guard let msg = json["message"] as? String else { continue }
                     self.log("  \(msg)")
                     if (json["type"] as? String) == "success" { restored = true }
                     if (json["type"] as? String) == "error" {
@@ -1934,7 +3033,9 @@ class AppViewModel: ObservableObject {
     }
     
     func startCardScanning() {
-        guard !isScanningCards else { return }
+        // Not while a flash or save is using the phone, and not while the app
+        // is still switching phones: the scan would listen to the old one.
+        guard !isScanningCards, !isFlashing, !isCheckingDevice else { return }
         guard let deviceHelper = AppViewModel.deviceHelperExecutableURL else {
             errorMessage = L("status.device_tools_are_missing_from", "Device tools are missing from this build.")
             log("Bundled device_helper not found — cannot scan.")
@@ -2036,7 +3137,7 @@ class AppViewModel: ObservableObject {
                                     if dummyHashes.contains(candidate) { continue }
                                     
                                     await MainActor.run {
-                                        guard self.scanProcess === proc else { return }
+                                        guard self.scanProcess === proc, self.device?.udid == udid else { return }
                                         if !self.cards.contains(where: { $0.id == candidate }) {
                                             self.cards.append(CardItem(id: candidate, isSelected: true))
                                             self.saveCards()
@@ -2089,11 +3190,46 @@ class AppViewModel: ObservableObject {
     
     // MARK: - Skin Application
     
+    // Cards about to be sent whose original is not saved and still could be.
+    nonisolated static func originalsWorthSaving(sending: [String], saved: Set<String>, flashed: Set<String>, declined: Set<String>) -> [String] {
+        sending.filter { !saved.contains($0) && !flashed.contains($0) && !declined.contains($0) }
+    }
+
+    // Before the first write to a card, its original is the only copy there
+    // is. Most people skipped Read Original Designs, and found Restore greyed
+    // out when they wanted their bank's design back.
     func applySkin() {
-        guard let udid = device?.udid else {
+        guard !isFlashing else { return }
+        guard device?.udid != nil else {
             errorMessage = L("error.no_iphone_connected", "No iPhone connected.")
             return
         }
+        let sending = cards.filter { $0.isSelected && $0.customImageURL != nil }.map(\.id)
+        let unsaved = Self.originalsWorthSaving(sending: sending, saved: backedUpCards, flashed: flashedCards, declined: sendWithoutSaving)
+        guard !unsaved.isEmpty else { sendSkins(); return }
+        let alert = NSAlert()
+        alert.messageText = L("flash.save_first_title", "Save the originals first?")
+        alert.informativeText = String(format: L("flash.save_first_body", "%d of these cards have no saved original. Once the new artwork is on them, AirCard cannot put their own design back."), unsaved.count)
+        alert.addButton(withTitle: L("flash.save_then_send", "Save Originals, Then Send"))
+        alert.addButton(withTitle: L("flash.send_without_saving", "Send Without Saving"))
+        alert.addButton(withTitle: L("ui.cancel", "Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            readOriginals(of: unsaved) { [weak self] in self?.sendSkins() }
+        case .alertSecondButtonReturn:
+            sendWithoutSaving.formUnion(unsaved)
+            sendSkins()
+        default:
+            return
+        }
+    }
+
+    private func sendSkins() {
+        guard let udid = device?.udid, !isFlashing else {
+            if device?.udid == nil { errorMessage = L("error.no_iphone_connected", "No iPhone connected.") }
+            return
+        }
+        restoreMissingArtwork()
         let selectedCardsWithSkin = cards.filter { $0.isSelected && $0.customImageURL != nil }
         guard !selectedCardsWithSkin.isEmpty else {
             errorMessage = L("error.please_assign_a_skin_image", "Please assign a skin image to at least one selected card.")
@@ -2101,6 +3237,7 @@ class AppViewModel: ObservableObject {
         }
         
         isFlashing = true
+        busyJob = .flashCards
         flashCancelled = false
         flashStalled = false
         showLogs = true
@@ -2116,6 +3253,9 @@ class AppViewModel: ObservableObject {
             var notSent: [Int] = []
             let totalCards = Double(selectedCardsWithSkin.count)
             for (idx, card) in selectedCardsWithSkin.enumerated() {
+                // A Cancel that lands just after a card finished stops here,
+                // before the next card, instead of being lost.
+                if await MainActor.run(body: { self.flashCancelled }) { break }
                 guard let imgURL = card.customImageURL else { continue }
                 
                 // A fresh directory per run. The old fixed /tmp path was shared
@@ -2298,22 +3438,26 @@ class AppViewModel: ObservableObject {
             }
             
             let didFail = flashFailed
+            let failedCards = notSent
             await MainActor.run {
                 self.isFlashing = false
                 self.flashStalled = false
+                let total = selectedCardsWithSkin.count
+                let list = AppViewModel.cardList(failedCards)
                 if self.flashCancelled {
-                    self.statusText = L("status.flash_cancelled", "Cancelled. Cards already sent to the iPhone are left as they are.")
+                    // Cards that had already failed before Cancel are still named.
+                    self.statusText = failedCards.isEmpty
+                        ? L("status.flash_cancelled", "Cancelled. Cards already sent to the iPhone are left as they are.")
+                        : String(format: L("status.flash_cancelled_some_failed", "Cancelled. Cards already sent are left as they are. These had failed before that: %@."), list)
                 } else if didFail {
-                    let total = selectedCardsWithSkin.count
-                    let list = notSent.sorted().map { "#\($0)" }.joined(separator: ", ")
                     if notSent.isEmpty {
                         self.statusText = L("status.failed_to_apply_card_skins", "Failed to apply card skins.")
                         self.errorMessage = L("error.one_or_more_cards_could", "One or more cards could not be updated. Check the log and try again.")
                     } else {
-                        self.statusText = String(format: L("status.cards_partly_sent", "Sent %1$d of %2$d. Not sent: %3$@."), total - notSent.count, total, list)
+                        self.statusText = String(format: L("status.cards_partly_sent", "Sent %1$d of %2$d. Not sent: %3$@."), total - failedCards.count, total, list)
                         self.errorMessage = String(format: L("error.some_cards_not_sent", "These cards were not sent: %@. Check that the iPhone is still connected and unlocked, then try them again."), list)
                     }
-                    self.log("Artwork sent for \(total - notSent.count) of \(total) cards; not sent: \(list).")
+                    self.log("Artwork sent for \(total - failedCards.count) of \(total) cards; not sent: \(failedCards).")
                 } else {
                     // Nothing on the phone confirms the card actually changed; the
                     // write is sent and the phone does not report back. Say that.
@@ -2321,8 +3465,23 @@ class AppViewModel: ObservableObject {
                     self.showSuccessAlert = true
                     self.log("Artwork sent for all selected cards.")
                 }
+                // A failure is often an unplugged or swapped phone; look again so
+                // the header does not keep naming a phone that is gone.
+                if didFail { self.checkDevice(quiet: true) }
             }
         }
+    }
+
+    // "Card 3, Card 5 and Card 7", in the person's language: the way each card
+    // is labelled on screen, joined the way their language joins a list.
+    // Joined in the language the app is shown in, which is not always the
+    // system's: on a Mac set to a language AirCard does not have, the words
+    // were English and the "and" was not.
+    nonisolated static func cardList(_ numbers: [Int]) -> String {
+        let formatter = ListFormatter()
+        formatter.locale = Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
+        let labels = numbers.sorted().map { String(format: L("ui.card_number", "Card #%d"), $0) }
+        return formatter.string(from: labels) ?? labels.joined(separator: ", ")
     }
     
     // MARK: - Passcode Theme (.passthm) Handlers
@@ -2421,6 +3580,7 @@ class AppViewModel: ObservableObject {
         }
         
         isFlashing = true
+        busyJob = .flashPasscode
         showLogs = true
         progress = 0.0
         errorMessage = nil
@@ -2639,13 +3799,24 @@ class AppViewModel: ObservableObject {
         log("Imported theme '\(theme.name)' into Creator for custom editing")
     }
     
-    func clearCreator() {
+    // Each mode clears only its own work. Removing the poster, or Clear All
+    // while slicing a poster, also wiped every key built by hand in the other
+    // mode, with no warning and no way back.
+    func removePoster() {
         creatorPosterImage = nil
         creatorPosterZoom = 1.0
         creatorPosterOffset = .zero
         creatorSlicedKeys.removeAll()
-        clearAllIndividualKeys()
         statusText = L("status.theme_creator_reset", "Theme Creator reset")
+    }
+
+    func clearCreatorMode() {
+        if creatorSubMode == .posterSlice {
+            removePoster()
+        } else {
+            clearAllIndividualKeys()
+            statusText = L("status.theme_creator_reset", "Theme Creator reset")
+        }
     }
     
     func flashCreatedTheme() {
@@ -2688,8 +3859,14 @@ struct WalletCardView: View {
     let originalImage: NSImage?
     let hasBackup: Bool
     let busy: Bool
+    // Save, Restore and Discard talk to the phone; without one they did nothing.
+    let connected: Bool
     let onPickImage: () -> Void
     let onDropImage: (NSImage) -> Void
+    // A zip or folder dropped on the card: it goes to the Skin Library.
+    let onDropPack: (URL) -> Void
+    // Something dropped that is neither a picture nor a pack.
+    let onDropUnreadable: () -> Void
     let onClearImage: () -> Void
     let onDesign: () -> Void
     let onChooseFromLibrary: () -> Void
@@ -2732,7 +3909,9 @@ struct WalletCardView: View {
                         }
                         .buttonStyle(.plain)
                         .padding(10)
+                        .disabled(busy)
                         .help(L("ui.remove_skin", "Remove skin"))
+                        .accessibilityLabel(L("ui.remove_skin", "Remove skin"))
                         
                         // Hover overlay: Change Skin
                         if isHovered {
@@ -2843,6 +4022,17 @@ struct WalletCardView: View {
                             Text(L("ui.click_to_browse_or_drag", "Click to browse or drag image"))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
+
+                            // After a scan every card looked the same, numbered
+                            // and blank: nothing said which was the bank card
+                            // just tapped, or how to find out.
+                            if connected && !hasBackup {
+                                Text(L("ui.read_originals_to_see", "Read Original Designs to see which card this is."))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 16)
+                            }
                         }
                     }
                     .frame(width: 290, height: 182)
@@ -2851,8 +4041,11 @@ struct WalletCardView: View {
             .frame(width: 290, height: 182)
             .shadow(color: .black.opacity(isHovered ? 0.22 : 0.12), radius: isHovered ? 10 : 5, y: isHovered ? 5 : 2)
             .onHover { h in isHovered = h }
-            .onTapGesture { onPickImage() }
+            // While a flash runs, the card it is sending must not change under it:
+            // the list would show artwork that never went to the phone.
+            .onTapGesture { if !busy { onPickImage() } }
             .onDrop(of: [UTType.fileURL, UTType.image], isTargeted: $isTargeted) { providers in
+                guard !busy else { return false }
                 // Hand the picture to the model by card id. Writing it into this
                 // row after an async load could land it on another card if the
                 // list changed in between.
@@ -2865,8 +4058,14 @@ struct WalletCardView: View {
                         } else if let data = item as? Data, let urlStr = String(data: data, encoding: .utf8), let url = URL(string: urlStr) {
                             fileURL = url
                         }
-                        if let url = fileURL, let img = NSImage(contentsOf: url) {
+                        guard let url = fileURL else { return }
+                        let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                        if isFolder || url.pathExtension.lowercased() == "zip" {
+                            Task { @MainActor in onDropPack(url) }
+                        } else if let img = NSImage(contentsOf: url) {
                             Task { @MainActor in onDropImage(img) }
+                        } else {
+                            Task { @MainActor in onDropUnreadable() }
                         }
                     }
                     return true
@@ -2888,6 +4087,10 @@ struct WalletCardView: View {
                 Toggle("", isOn: $card.isSelected)
                     .labelsHidden()
                     .help(L("ui.include_in_flash", "Include in flash"))
+                    // Which card this box belongs to, said out loud; it was an
+                    // unnamed checkbox, one per card.
+                    .accessibilityLabel(String(format: L("ui.card_number", "Card #%d"), cardIndex + 1))
+                    .accessibilityHint(L("ui.include_in_flash", "Include in flash"))
                 
                 Text(String(format: L("ui.card_number", "Card #%d"), cardIndex + 1))
                     .font(.system(size: 12, weight: .semibold))
@@ -2910,6 +4113,7 @@ struct WalletCardView: View {
                     }
                     .buttonStyle(.plain)
                     .help(copied ? L("ui.copied", "Copied!") : L("ui.copy_full_hash", "Copy full hash"))
+                    .accessibilityLabel(copied ? L("ui.copied", "Copied!") : L("ui.copy_full_hash", "Copy full hash"))
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -2945,20 +4149,20 @@ struct WalletCardView: View {
                         Label(L("ui.save_original", "Save Original Artwork"),
                               systemImage: "square.and.arrow.down")
                     }
-                    .disabled(hasBackup || busy)
+                    .disabled(hasBackup || busy || !connected)
 
                     Button(action: onRestore) {
                         Label(L("ui.restore_original", "Restore Original Artwork"),
                               systemImage: "arrow.uturn.backward")
                     }
-                    .disabled(!hasBackup || busy)
+                    .disabled(!hasBackup || busy || !connected)
 
                     if hasBackup {
                         Button(role: .destructive, action: onDiscardBackup) {
                             Label(L("ui.discard_original", "Discard Saved Original..."),
                                   systemImage: "trash")
                         }
-                        .disabled(busy)
+                        .disabled(busy || !connected)
                         Divider()
                         Text(L("ui.original_saved", "Original artwork is saved"))
                     }
@@ -2981,7 +4185,9 @@ struct WalletCardView: View {
                         .foregroundColor(.secondary.opacity(0.7))
                 }
                 .buttonStyle(.plain)
+                .disabled(busy)
                 .help(L("ui.remove_from_list", "Remove from list"))
+                .accessibilityLabel(L("ui.remove_from_list", "Remove from list"))
             }
             .padding(.horizontal, 4)
         }
@@ -3012,7 +4218,9 @@ struct CardFaceDesign {
     // later prepare step has nothing left to crop.
     static let pixelSize = CGSize(width: 1536, height: 969)
     static let aspect = pixelSize.width / pixelSize.height
-    static let zoomRange: ClosedRange<Double> = 0.5...4.0
+    // Down to 0.2 so a portrait photo fits whole: at 0.5 it still lost about
+    // 40% to the card's shape.
+    static let zoomRange: ClosedRange<Double> = 0.2...4.0
 
     // The scale at which the image just covers the card. Zoom multiplies from
     // here, so 1.0 always means edge to edge with nothing showing behind it.
@@ -3097,6 +4305,7 @@ struct CardFaceDesignerView: View {
                     Text(L("ui.zoom", "Zoom"))
                         .frame(width: 96, alignment: .leading)
                     Slider(value: zoomBinding, in: CardFaceDesign.zoomRange)
+                        .accessibilityLabel(L("ui.zoom", "Zoom"))
                     Text((design?.zoom ?? 1).formatted(.number.precision(.fractionLength(1))) + "×")
                         .monospacedDigit()
                         .frame(width: 44, alignment: .trailing)
@@ -3105,6 +4314,7 @@ struct CardFaceDesignerView: View {
                     Text(L("designer.background", "Background"))
                         .frame(width: 96, alignment: .leading)
                     ColorPicker("", selection: backgroundBinding, supportsOpacity: false)
+                        .accessibilityLabel(L("designer.background", "Background"))
                         .labelsHidden()
                     Spacer()
                     Button(L("ui.choose_image", "Choose Image...")) { chooseImage() }
@@ -3131,6 +4341,25 @@ struct CardFaceDesignerView: View {
         }
         .padding(22)
         .frame(width: 580)
+    }
+
+    private func nudge(_ press: KeyPress) -> KeyPress.Result {
+        guard design != nil else { return .ignored }
+        let step: CGFloat = press.modifiers.contains(.shift) ? 0.05 : 0.01
+        switch press.key {
+        case .leftArrow: design?.offset.width -= step
+        case .rightArrow: design?.offset.width += step
+        case .upArrow: design?.offset.height -= step
+        case .downArrow: design?.offset.height += step
+        default:
+            switch press.characters {
+            case "+", "=": design?.zoom = min(CardFaceDesign.zoomRange.upperBound, (design?.zoom ?? 1) * 1.1)
+            case "-", "_": design?.zoom = max(CardFaceDesign.zoomRange.lowerBound, (design?.zoom ?? 1) / 1.1)
+            default: return .ignored
+            }
+        }
+        dragStart = design?.offset ?? .zero
+        return .handled
     }
 
     private var canvas: some View {
@@ -3179,6 +4408,10 @@ struct CardFaceDesignerView: View {
             .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
                 load(from: providers)
             }
+            // Framing needed a mouse. Arrow keys move the picture (Shift for
+            // bigger steps), + and - zoom.
+            .focusable()
+            .onKeyPress(phases: [.down, .repeat]) { press in nudge(press) }
         }
         .aspectRatio(CardFaceDesign.aspect, contentMode: .fit)
     }
@@ -3280,10 +4513,11 @@ struct SkinLibraryView: View {
                 }
 
                 HStack(spacing: 8) {
+                    // Still open while something runs: a second import waits
+                    // its turn rather than being lost.
                     Button(action: pickFiles) {
                         Label(L("skins.import_file", "Import File..."), systemImage: "square.and.arrow.down")
                     }
-                    .disabled(busy)
                     .help(L("skins.import_file_help", "A zip of card pictures, a folder, or one or more pictures"))
 
                     if canChoose {
@@ -3299,21 +4533,30 @@ struct SkinLibraryView: View {
                     TextField(L("skins.link_placeholder", "Or paste a link to a zip or picture"), text: $link)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(download)
-                        .disabled(busy)
+                        .disabled(vm.isDownloadingSkins)
                     if vm.isDownloadingSkins {
                         Button(L("ui.cancel", "Cancel")) { vm.cancelSkinDownload() }
                     } else {
                         Button(L("skins.download", "Download"), action: download)
-                            .disabled(busy || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+
+                if let progress = vm.skinProgress {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(progress)
+                            .font(.callout)
+                            .foregroundColor(.secondary)
                     }
                 }
 
                 if let note = vm.skinLibraryNote {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        if busy {
-                            ProgressView().controlSize(.small)
-                        } else if note.isError {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                        if note.isError {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                                .accessibilityHidden(true)
                         }
                         Text(note.text)
                             .font(.callout)
@@ -3365,6 +4608,20 @@ struct SkinLibraryView: View {
             .padding(.vertical, 12)
         }
         .frame(minWidth: 640, idealWidth: 760, minHeight: 500, idealHeight: 620)
+        // What happened is said out loud; a line of text at the top of the sheet
+        // is easy to miss, and VoiceOver said nothing at all.
+        .onChange(of: vm.skinLibraryNote) { _, note in
+            guard let note else { return }
+            NSAccessibility.post(element: NSApp.keyWindow as Any, notification: .announcementRequested,
+                                 userInfo: [.announcement: note.text,
+                                            .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
+        .onChange(of: vm.skinDownloadSucceeded) { _, _ in link = "" }
+        // Coming back from Finder, where "Show in Finder" sends people to add,
+        // remove or put back pictures.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            vm.loadSkinLibrary()
+        }
     }
 
     private var emptyState: some View {
@@ -3392,7 +4649,7 @@ struct SkinLibraryView: View {
                         VStack(spacing: 6) {
                             Color.clear
                                 .aspectRatio(1536.0 / 969.0, contentMode: .fit)
-                                .overlay(SkinThumbnail(url: item.url))
+                                .overlay(SkinThumbnail(url: item.url, version: item.version))
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -3430,6 +4687,11 @@ struct SkinLibraryView: View {
             vm.skinLibraryNote = SkinLibraryNote(text: L("skins.select_cards_first", "Select one or more cards in the list first, then open the library again."))
             return
         }
+        guard FileManager.default.fileExists(atPath: item.url.path) else {
+            vm.skinLibraryNote = SkinLibraryNote(text: L("skins.picture_gone", "That picture is no longer in the library."), isError: true)
+            vm.loadSkinLibrary()
+            return
+        }
         guard let image = NSImage(contentsOf: item.url) else {
             vm.skinLibraryNote = SkinLibraryNote(text: L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG."), isError: true)
             return
@@ -3437,11 +4699,12 @@ struct SkinLibraryView: View {
         vm.chooseSkin(image)
     }
 
+    // The link stays in the field until the download succeeds: most failures
+    // say to try it in a browser, and that needs the link.
     private func download() {
         let text = link
-        guard !busy, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !vm.isDownloadingSkins, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         vm.downloadSkins(from: text)
-        if vm.isDownloadingSkins { link = "" }
     }
 
     private func pickFiles() {
@@ -3452,7 +4715,7 @@ struct SkinLibraryView: View {
         panel.canChooseFiles = true
         panel.message = L("skins.import_panel", "Choose a zip of card pictures, a folder, or pictures to add to the library.")
         if panel.runModal() == .OK {
-            vm.importSkins(from: panel.urls)
+            vm.importSkinsAfterConfirming(panel.urls)
         }
     }
 
@@ -3486,7 +4749,7 @@ struct SkinLibraryView: View {
             }
         }
         group.notify(queue: .main) {
-            vm.importSkins(from: urls)
+            vm.importSkinsAfterConfirming(urls)
         }
         return true
     }
@@ -3512,12 +4775,43 @@ struct ContentView: View {
     // The log was a fixed 90 pt strip, six or seven lines. Drag its top edge to
     // size it; the height is remembered between launches.
     @AppStorage("activityLogHeight") private var logHeight: Double = 180
+    @State private var windowHeight: Double = 680
+    static let minimumHeight: CGFloat = 540
+
+    // The log's height as shown: what the person dragged it to, but never so
+    // tall in a short window that the cards or the Flash button disappear.
+    nonisolated static func shownLogHeight(wanted: Double, window: Double) -> Double {
+        min(max(wanted, 80), max(80, window * 0.4))
+    }
     @State private var logDragStart: Double?
     @State private var dragOffsetStart: CGPoint = .zero
     @State private var dragKeyStartOffsets: [String: CGPoint] = [:]
     @State private var isTargetedPoster = false
     @State private var isTargetedTheme = false
     
+    // The keypad target in words: "TelephonyUI-10 · ALL" meant nothing to anyone.
+    private var passcodeTargetSummary: String {
+        let system: String
+        switch vm.targetTelephonyVersion {
+        case "TelephonyUI-10": system = "iOS 18+"
+        case "TelephonyUI-9": system = "iOS 16–17"
+        case "TelephonyUI-8": system = "iOS 14–15"
+        default: system = "iOS 14+"
+        }
+        return [system, vm.passcodeLanguageTarget.title, vm.passcodeBoldTarget.shortTitle].joined(separator: " · ")
+    }
+
+    // Says what is really happening; reading originals is not flashing.
+    private var busyLabel: String {
+        switch vm.busyJob {
+        case .readingOriginals: return L("ui.busy_reading_originals", "Reading Originals...")
+        case .savingOriginal: return L("ui.busy_saving_original", "Saving Original...")
+        case .restoring: return L("ui.busy_restoring", "Restoring...")
+        case .flashPasscode: return L("ui.flashing_passcode", "Flashing Passcode...")
+        case .flashCards, .none: return L("ui.flashing_cards", "Flashing Cards...")
+        }
+    }
+
     private var readyToFlashCount: Int {
         vm.cards.filter { $0.isSelected && $0.customImageURL != nil }.count
     }
@@ -3538,7 +4832,10 @@ struct ContentView: View {
                 if vm.selectedTab == .walletCards {
                     toolbarView
                 } else {
+                    // Changing or clearing the theme mid-send changed what the
+                    // screen said was being sent.
                     passcodeToolbarView
+                        .disabled(vm.isFlashing)
                 }
             }
             .frame(height: 48)
@@ -3565,12 +4862,17 @@ struct ContentView: View {
                             spacing: 20
                         ) {
                             ForEach(Array(vm.cards.indices), id: \.self) { idx in
+                                // Taken now: a dropped picture arrives after an
+                                // async load, by which time the list may have
+                                // changed and idx point at another card, or none.
+                                let cardID = vm.cards[idx].id
                                 WalletCardView(
                                     card: $vm.cards[idx],
                                     cardIndex: idx,
                                     originalImage: vm.originalPreviews[vm.cards[idx].id],
                                     hasBackup: vm.backedUpCards.contains(vm.cards[idx].id),
                                     busy: vm.isFlashing,
+                                    connected: vm.device?.connected == true,
                                     onPickImage: {
                                         let id = vm.cards[idx].id
                                         // A card with a skin opens its design to adjust.
@@ -3585,7 +4887,9 @@ struct ContentView: View {
                                             openCardImagePicker(for: id)
                                         }
                                     },
-                                    onDropImage: { image in vm.openDesigner(for: vm.cards[idx].id, image: image) },
+                                    onDropImage: { image in vm.openDesigner(for: cardID, image: image) },
+                                    onDropPack: { url in vm.importDroppedPack(url, for: cardID) },
+                                    onDropUnreadable: { vm.errorMessage = L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG.") },
                                     onClearImage: { vm.clearCardImage(for: vm.cards[idx].id) },
                                     onDesign: { vm.openDesigner(for: vm.cards[idx].id, image: nil) },
                                     onChooseFromLibrary: { vm.openSkinLibrary(for: vm.cards[idx].id) },
@@ -3619,7 +4923,15 @@ struct ContentView: View {
                 .padding(.vertical, 10)
                 .background(Color(NSColor.controlBackgroundColor))
         }
-        .frame(minWidth: 880, minHeight: 680)
+        // 680 was taller than a 13-inch screen at "Larger Text": the Flash
+        // button, Cancel and the status line ended up below the screen. Every
+        // workspace scrolls instead, and the log takes at most 40%.
+        .frame(minWidth: 880, minHeight: ContentView.minimumHeight)
+        .background(GeometryReader { proxy in
+            Color.clear
+                .onAppear { windowHeight = proxy.size.height }
+                .onChange(of: proxy.size.height) { _, height in windowHeight = height }
+        })
         .sheet(isPresented: Binding(
             get: { vm.designingCardID != nil || vm.designingAllSelected },
             set: { if !$0 { vm.closeDesigner() } }
@@ -3748,7 +5060,7 @@ struct ContentView: View {
             // Device Status Capsule
             HStack(spacing: 8) {
                 Circle()
-                    .fill(vm.device?.connected == true ? Color.green : Color.red)
+                    .fill(vm.device?.connected == true ? (vm.deviceWarning ? Color.orange : Color.green) : Color.red)
                     .frame(width: 8, height: 8)
                 
                 if let dev = vm.device, dev.connected {
@@ -3771,7 +5083,7 @@ struct ContentView: View {
                         .layoutPriority(1)
                 }
 
-                if vm.devices.count > 1 {
+                if !vm.devices.isEmpty {
                     Menu {
                         ForEach(vm.devices, id: \.udid) { d in
                             Button {
@@ -3793,6 +5105,7 @@ struct ContentView: View {
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.system(size: 10))
                     }
+                    .accessibilityLabel(String(format: L("ui.switch_device_help", "Switch device (%d connected)"), vm.devices.count))
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                     .disabled(vm.isCheckingDevice || vm.isScanningCards || vm.isFlashing)
@@ -3870,7 +5183,7 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .tint(vm.isScanningCards ? .red : .blue)
             .controlSize(.regular)
-            .disabled(vm.device?.connected != true)
+            .disabled(vm.device?.connected != true || (!vm.isScanningCards && (vm.isFlashing || vm.isCheckingDevice)))
             // An empty tooltip shows nothing, so this only speaks up while greyed out.
             .help(vm.device?.connected == true ? "" : L("ui.scan_needs_iphone", "Connect your iPhone first"))
             
@@ -3902,6 +5215,7 @@ struct ContentView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
+            .disabled(vm.isFlashing)
             .help(compact
                   ? L("skins.title", "Skin Library") + "\n" + L("ui.skin_library_help", "Import card pictures from a zip, a folder or a link, and use them on the selected cards")
                   : L("ui.skin_library_help", "Import card pictures from a zip, a folder or a link, and use them on the selected cards"))
@@ -4022,6 +5336,47 @@ struct ContentView: View {
                             : (current ? L("onboard.a11y_current", "Next step") : L("onboard.a11y_waiting", "Not yet")))
     }
 
+    // The one command that fixes this Mac's setup, where it can be copied.
+    private func setupProblem(_ failure: AppViewModel.BackendFailure) -> some View {
+        let command: String? = {
+            switch failure {
+            case .xcodeLicence: return "sudo xcodebuild -license accept"
+            case .commandLineTools: return "xcode-select --install"
+            case .staleDeveloperPath: return "sudo xcode-select --reset"
+            case .unknown: return nil
+            }
+        }()
+        return VStack(alignment: .leading, spacing: 10) {
+            Label {
+                Text(AppViewModel.backendFailureMessage(failure))
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+            }
+            if let command {
+                HStack(spacing: 8) {
+                    Text(command)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(NSColor.textBackgroundColor))
+                        .cornerRadius(6)
+                    Button(L("ui.copy_command", "Copy")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(command, forType: .string)
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+        .font(.subheadline)
+        .frame(maxWidth: 480, alignment: .leading)
+        .padding(16)
+        .background(Color.orange.opacity(0.08))
+        .cornerRadius(12)
+    }
+
     private var emptyStateView: some View {
         VStack(spacing: 18) {
             Image(systemName: "creditcard.viewfinder")
@@ -4032,11 +5387,15 @@ struct ContentView: View {
                 .font(.title3)
                 .fontWeight(.bold)
 
+            if let failure = vm.backendFailure {
+                setupProblem(failure)
+            }
+
             VStack(alignment: .leading, spacing: 12) {
                 setupRow(0, Text(L("onboard.connect", "Connect your iPhone with a cable")),
                          detail: Text(vm.awaitingTrust
                             ? L("onboard.connect_trust_check", "Unlock the iPhone and tap Trust, then click Check Again below.")
-                            : L("onboard.connect_detail", "Use a cable that carries data. If your Mac asks whether to allow the accessory, click Allow.")))
+                            : L("onboard.connect_detail_unlock", "Unlock your iPhone, and use a cable that carries data. If your Mac asks whether to allow the accessory, click Allow.")))
                 setupRow(1, Text(LM("onboard.scan", "Click **Start Scanning** below.")))
                 setupRow(2, Text(LM("ui.on_your_iphone_double_click", "On your iPhone, **double-click the Side button** (Apple Pay), authenticate with **Face ID**, and **tap your card**.")))
                 setupRow(3, Text(L("ui.your_card_will_be_detected", "Your card will be detected immediately!")))
@@ -4048,7 +5407,7 @@ struct ContentView: View {
             .cornerRadius(12)
 
             HStack(spacing: 12) {
-                if vm.device?.connected != true && vm.awaitingTrust {
+                if vm.device?.connected != true && (vm.awaitingTrust || vm.backendFailure != nil || vm.helperFailed) {
                     // Not looked at again on its own while waiting on Trust (see
                     // shouldLookForDevice), so a spinner here would be a promise
                     // the app is not keeping. Tapping Trust changes nothing on the
@@ -4164,7 +5523,7 @@ struct ContentView: View {
                 .disabled(vm.loadedPasscodeTheme == nil)
             } else {
                 Button(L("ui.clear_all", "Clear All")) {
-                    vm.clearCreator()
+                    vm.clearCreatorMode()
                 }
                 .buttonStyle(.link)
                 .font(.caption)
@@ -4176,12 +5535,15 @@ struct ContentView: View {
         .frame(height: 48)
     }
     
+    // Scrolls, so a short window cuts nothing off the keypad preview.
     private var passcodeThemeWorkspaceView: some View {
-        Group {
-            if vm.passcodeTabMode == .applyTheme {
-                passcodeApplyThemeWorkspaceView
-            } else {
-                passcodeThemeCreatorWorkspaceView
+        ScrollView(.vertical) {
+            Group {
+                if vm.passcodeTabMode == .applyTheme {
+                    passcodeApplyThemeWorkspaceView
+                } else {
+                    passcodeThemeCreatorWorkspaceView
+                }
             }
         }
     }
@@ -4194,6 +5556,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 14) {
                 applyThemeControlsCard
                 targetSettingsCard
+                    .disabled(vm.isFlashing)
                 Spacer()
             }
             .frame(width: 320)
@@ -4411,6 +5774,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 14) {
                 creatorControlsCard
                 targetSettingsCard
+                    .disabled(vm.isFlashing)
                 Spacer()
             }
             .frame(width: 320)
@@ -4487,7 +5851,7 @@ struct ContentView: View {
                                     .controlSize(.small)
                                     
                                     Button(L("ui.remove", "Remove")) {
-                                        vm.clearCreator()
+                                        vm.removePoster()
                                     }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
@@ -4594,7 +5958,7 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                             .font(.caption)
                         
-                        Text(String(format: "%.1fx", vm.creatorPosterZoom))
+                        Text(vm.creatorPosterZoom.formatted(.number.precision(.fractionLength(1))) + "×")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .frame(width: 32, alignment: .trailing)
                     }
@@ -4670,7 +6034,7 @@ struct ContentView: View {
                                     .foregroundColor(.secondary)
                                     .font(.caption)
                                 
-                                Text(String(format: "%.1fx", zoomVal))
+                                Text(zoomVal.formatted(.number.precision(.fractionLength(1))) + "×")
                                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                     .frame(width: 32, alignment: .trailing)
                             }
@@ -4941,6 +6305,8 @@ struct ContentView: View {
     // MARK: - Authentic Phone Lock Screen Mockup Container
     
     private func phoneMockupContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        // Read as one picture: VoiceOver used to read a fake Cancel, Emergency
+        // and twenty digits and letters as if they were controls.
         ZStack {
             // Phone Background (Deep Lock Screen Slate / Black)
             RoundedRectangle(cornerRadius: 36, style: .continuous)
@@ -5012,6 +6378,8 @@ struct ContentView: View {
                 .stroke(Color.white.opacity(0.2), lineWidth: 1.5)
         )
         .shadow(color: Color.black.opacity(0.4), radius: 16, x: 0, y: 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L("ui.lock_screen_keypad_preview", "Lock Screen Keypad Preview"))
     }
     
     // MARK: - Passcode Target Configuration Box
@@ -5159,7 +6527,7 @@ struct ContentView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 4)
                 }
-                .frame(height: logHeight)
+                .frame(height: ContentView.shownLogHeight(wanted: logHeight, window: windowHeight))
                 .onChange(of: vm.logs.count) { _, _ in
                     if let last = vm.logs.indices.last {
                         proxy.scrollTo(last, anchor: .bottom)
@@ -5199,7 +6567,7 @@ struct ContentView: View {
                     if vm.selectedTab == .passcodeThemes {
                         if vm.passcodeTabMode == .themeCreator {
                             let count = vm.effectiveCreatorKeys.count
-                            let targetInfo = "\(vm.targetTelephonyVersion) · \(vm.passcodeLanguageTarget.code.uppercased()) · \(vm.passcodeBoldTarget.shortTitle)"
+                            let targetInfo = passcodeTargetSummary
                             if count > 0 {
                                 Text(String(format: L("ui.creator_status", "Theme Creator · %1$d of 10 keys configured · Target: %2$@"), count, targetInfo))
                                     .font(.system(size: 10))
@@ -5210,7 +6578,7 @@ struct ContentView: View {
                                     .foregroundColor(.secondary)
                             }
                         } else if let theme = vm.loadedPasscodeTheme {
-                            let targetInfo = "\(vm.targetTelephonyVersion) · \(vm.passcodeLanguageTarget.code.uppercased()) · \(vm.passcodeBoldTarget.shortTitle)"
+                            let targetInfo = passcodeTargetSummary
                             Text(String(format: L("ui.theme_status", "%1$d source assets loaded · Target: %2$@"), theme.fileCount, targetInfo))
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
@@ -5255,7 +6623,7 @@ struct ContentView: View {
                                     Image(systemName: "lock.shield.fill")
                                         .frame(width: 16, height: 16)
                                 }
-                                Text(vm.isFlashing ? L("ui.flashing_passcode", "Flashing Passcode...") : L("ui.flash_to_iphone", "Flash to iPhone"))
+                                Text(vm.isFlashing ? busyLabel : L("ui.flash_to_iphone", "Flash to iPhone"))
                                     .fontWeight(.semibold)
                             }
                             .padding(.horizontal, 8)
@@ -5275,7 +6643,7 @@ struct ContentView: View {
                                     Image(systemName: "lock.shield.fill")
                                         .frame(width: 16, height: 16)
                                 }
-                                Text(vm.isFlashing ? L("ui.flashing_passcode", "Flashing Passcode...") : L("ui.flash_passcode_theme", "Flash Passcode Theme"))
+                                Text(vm.isFlashing ? busyLabel : L("ui.flash_passcode_theme", "Flash Passcode Theme"))
                                     .fontWeight(.semibold)
                             }
                             .padding(.horizontal, 8)
@@ -5283,7 +6651,7 @@ struct ContentView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.purple)
                         .controlSize(.regular)
-                        .disabled(vm.loadedPasscodeTheme == nil || vm.isFlashing || vm.device?.connected != true)
+                        .disabled(vm.loadedPasscodeTheme == nil || vm.isFlashing || vm.isInspectingTheme || vm.device?.connected != true)
                     }
                 } else {
                     Button(action: { vm.applySkin() }) {
@@ -5296,13 +6664,15 @@ struct ContentView: View {
                                 Image(systemName: "sparkles")
                                     .frame(width: 16, height: 16)
                             }
-                            Text(vm.isFlashing ? L("ui.flashing_cards", "Flashing Cards...") : (readyToFlashCount > 0 ? String(format: L("ui.flash_skins_count", "Flash Skins (%d)"), readyToFlashCount) : L("ui.flash_skins", "Flash Skins")))
+                            Text(vm.isFlashing ? busyLabel : (readyToFlashCount > 0 ? String(format: L("ui.flash_skins_count", "Flash Skins (%d)"), readyToFlashCount) : L("ui.flash_skins", "Flash Skins")))
                                 .fontWeight(.semibold)
                         }
                         .padding(.horizontal, 8)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.green)
+                    // A darker green, so the white label is readable (4.5:1 or
+                    // better); system green gave about 2.2:1.
+                    .tint(Color(red: 0.10, green: 0.46, blue: 0.20))
                     .controlSize(.regular)
                     .disabled(readyToFlashCount == 0 || vm.isFlashing || vm.device?.connected != true)
 
@@ -5437,9 +6807,11 @@ struct ContentView: View {
                 Spacer()
                 
                 Button(L("ui.add_to_list", "Add to List")) {
-                    vm.addCardHash(vm.manualHashInput)
-                    vm.showAddCardSheet = false
-                    vm.manualHashInput = ""
+                    // Anything not taken stays in the field to fix, and the
+                    // sheet stays open for it; it used to close and wipe it all.
+                    let rejected = vm.addCardHash(vm.manualHashInput)
+                    vm.manualHashInput = rejected.joined(separator: "\n")
+                    if rejected.isEmpty { vm.showAddCardSheet = false }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
@@ -5597,6 +6969,7 @@ struct AirCardApp: App {
     // Cmd+N opened a second copy with its own device watch and its own flash,
     // and closing the window mid-flash threw the progress away.
     @StateObject private var vm = AppViewModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         Window("AirCard", id: "main") {

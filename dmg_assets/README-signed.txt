@@ -3,7 +3,11 @@
 ============================================================
 
 1. INSTALLATION
-   Drag the "AirCard" icon onto the "Applications" folder.
+   Drag the "AirCard" icon onto the "Applications" folder. If Finder says an
+   item named AirCard already exists, choose "Replace", not "Keep Both". Your
+   cards, saved originals and skin library are kept either way.
+   If you open AirCard straight from this window instead, it offers to move
+   itself into Applications and to replace an older copy there.
 
 2. FIRST LAUNCH
    Open AirCard from Applications. macOS asks once whether you want to open

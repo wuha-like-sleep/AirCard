@@ -91,3 +91,34 @@ class PasscodeInspectFailureTests(unittest.TestCase):
         emitted = set(re.findall(r'"code": "(passthm\.[a-z_]+)"', body)) - {"passthm.unreadable"}
         self.assertTrue(emitted)
         self.assertEqual(emitted - handled, set())
+
+
+class PasscodePreviewTests(unittest.TestCase):
+    """The preview shows each key's own picture, never a wallpaper or cover."""
+
+    def _preview(self, entries):
+        import base64
+        with tempfile.TemporaryDirectory() as tmp:
+            theme = Path(tmp) / "theme.passthm"
+            with zipfile.ZipFile(theme, "w") as z:
+                for name, data in entries.items():
+                    z.writestr(name, data)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                aircard_backend.cmd_inspect_passthm(str(theme))
+        out = json.loads(buf.getvalue().strip().splitlines()[-1])
+        self.assertTrue(out["ok"], out)
+        return {k: base64.b64decode(v.split(",", 1)[1]) for k, v in out["keys_preview"].items()}
+
+    def test_a_wallpaper_is_not_shown_as_a_key(self):
+        png = lambda tag: b"\x89PNG\r\n\x1a\n" + tag
+        preview = self._preview({
+            "TelephonyUI-10/Wallpaper@3x.png": png(b"wallpaper"),
+            "TelephonyUI-10/cover_2.jpg": png(b"cover"),
+            "TelephonyUI-10/en-3---white.png": png(b"three"),
+            "TelephonyUI-10/key_1.png": png(b"one"),
+        })
+        self.assertEqual(preview.get("3"), png(b"three"))
+        self.assertEqual(preview.get("1"), png(b"one"))
+        self.assertNotIn("2", preview)
+        self.assertNotIn(png(b"wallpaper"), preview.values())

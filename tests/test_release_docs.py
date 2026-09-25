@@ -25,6 +25,13 @@ class FirstLaunchGuideTests(unittest.TestCase):
         self.assertNotIn("xattr", text)
         self.assertNotIn("Control-click", text)
 
+    def test_every_guide_says_to_replace_rather_than_keep_both(self):
+        """Keep Both is how a Mac ends up with AirCard and AirCard 2."""
+        for path in [REPO / "README.md", *sorted((REPO / "dmg_assets").glob("README*.txt"))]:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("Replace", text, path.name)
+            self.assertIn("Keep Both", text, path.name)
+
     def test_build_picks_the_guide_by_signing(self):
         script = (REPO / "build.sh").read_text(encoding="utf-8")
         self.assertRegex(script, r'if \[ "\$CODESIGN_IDENTITY" = "-" \]; then\s+DMG_README="dmg_assets/README.txt"\s+else\s+DMG_README="dmg_assets/README-signed.txt"')
@@ -37,7 +44,8 @@ class FirstLaunchGuideTests(unittest.TestCase):
         english = set(re.findall(r'= "([^"]*)";', strings))
         for path in sorted((REPO / "dmg_assets").glob("README*.txt")):
             for name in re.findall(r'"([A-Z][^"]{2,40})"', path.read_text(encoding="utf-8")):
-                if name in {"AirCard", "Applications", "Open Anyway"}:
+                # Names that belong to macOS and Finder, not to AirCard.
+                if name in {"AirCard", "Applications", "Open Anyway", "Replace", "Keep Both"}:
                     continue
                 self.assertIn(name, english, f"{path.name} names a button the app does not have: {name}")
 

@@ -56,13 +56,23 @@ cat << 'EOF' > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.3.1</string>
+    <string>1.4.0</string>
     <key>CFBundleVersion</key>
     <string>9</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>AirCard looks here for other copies of itself, so it can offer to tidy them up, and for card pictures you add.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>AirCard looks here for other copies of itself, so it can offer to tidy them up, and for card pictures you add.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>AirCard looks here for other copies of itself, so it can offer to tidy them up, and for card pictures you add.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>AirCard reads card pictures and keypad themes you choose from this disk.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>AirCard reads card pictures and keypad themes you choose from this network disk.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>
@@ -101,6 +111,14 @@ for lang in "${LANGS[@]}"; do
     plutil -lint "$strings_file" >/dev/null || { echo "ERROR: $strings_file is malformed" >&2; exit 1; }
     mkdir -p "${RESOURCES_DIR}/${lang}.lproj"
     cp "$strings_file" "${RESOURCES_DIR}/${lang}.lproj/Localizable.strings"
+    # The reasons macOS shows when AirCard asks to read a protected folder.
+    info_file="locales/${lang}.lproj/InfoPlist.strings"
+    if [ ! -f "$info_file" ]; then
+        echo "ERROR: missing $info_file" >&2
+        exit 1
+    fi
+    plutil -lint "$info_file" >/dev/null || { echo "ERROR: $info_file is malformed" >&2; exit 1; }
+    cp "$info_file" "${RESOURCES_DIR}/${lang}.lproj/InfoPlist.strings"
 done
 
 # A bundle without these cannot talk to a device at all, so fail here instead

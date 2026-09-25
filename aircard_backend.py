@@ -51,19 +51,25 @@ from apply_card_skin import (
     ROOT,
     DEVICE_HELPER,
 )
-from card_assets import CACHE_FILES, build_card_assets
+from card_assets import CACHE_FILES, PDF_ASSET_NAME, build_card_assets
 from aircard import (
     find_device_helper,
     get_connected_device,
     has_card_backup,
     list_backed_up_cards,
     BACKED_UP_ASSETS,
+    REQUIRED_ASSETS,
     backup_preview_path,
     card_was_flashed,
     discard_card_backup,
     import_skins,
     list_connected_devices,
     mark_card_flashed,
+    HelperError,
+    clear_flashed_marker,
+    flashed_fingerprints,
+    list_flashed_cards,
+    looks_skinned_by_aircard,
     load_saved_cards,
     survey_devices,
     read_card_backup,
@@ -77,7 +83,12 @@ def cmd_device(preferred_udid: str | None = None):
     if not find_device_helper():
         print(json.dumps({"connected": False, "error": "device_helper_missing"}))
         return
-    device = get_connected_device(preferred_udid)
+    try:
+        device = get_connected_device(preferred_udid, strict=True)
+    except HelperError as e:
+        print(e.detail or e.code, file=sys.stderr)
+        print(json.dumps({"connected": False, "error": e.code}))
+        return
     if not device:
         print(json.dumps({"connected": False, "error": "no_device"}))
         return
@@ -97,7 +108,12 @@ def cmd_devices():
     if not find_device_helper():
         print(json.dumps({"connected": False, "error": "device_helper_missing", "devices": []}))
         return
-    devices, untrusted = survey_devices()
+    try:
+        devices, untrusted = survey_devices(strict=True)
+    except HelperError as e:
+        print(e.detail or e.code, file=sys.stderr)
+        print(json.dumps({"connected": False, "error": e.code, "devices": []}))
+        return
     print(json.dumps({"connected": bool(devices), "devices": devices, "untrusted": untrusted}))
 
 
@@ -118,17 +134,6 @@ def cmd_backup(udid: str, card_hash: str) -> bool:
         sys.stdout.flush()
         return True
 
-    # AirCard has already written to this card and nothing was saved before it
-    # did, so what is on the card now is a skin. Saving it would make restore
-    # put the skin back, and the one-save rule would then keep it that way.
-    if card_was_flashed(udid, card_hash):
-        print(json.dumps({
-            "type": "error", "card": card_hash, "code": "backup.already_changed",
-            "message": f"AirCard has already changed {card_hash[:12]}..., so its original is no longer on the phone."
-        }))
-        sys.stdout.flush()
-        return False
-
     pkpass_dir = f"/var/mobile/Library/Passes/Cards/{card_hash}.pkpass"
     originals = []
     for asset in BACKED_UP_ASSETS:
@@ -139,11 +144,36 @@ def cmd_backup(udid: str, card_hash: str) -> bool:
         if data:
             originals.append((asset, data))
 
+    def already_changed(why: str) -> bool:
+        print(json.dumps({
+            "type": "error", "card": card_hash, "code": "backup.already_changed",
+            "message": f"{card_hash[:12]}... {why}, so what is on it now is not its original."
+        }))
+        sys.stdout.flush()
+        return False
+
+    # What is on the card is a skin: saving it would make restore put the skin
+    # back, and the one-save rule would then keep it that way.
+    if looks_skinned_by_aircard(originals):
+        return already_changed("carries a skin made by AirCard")
+    never_landed = False
+    # A partial read never gets this far as a save: save_card_backup refuses it.
+    if card_was_flashed(udid, card_hash):
+        # AirCard tried to write here. If nothing on the card is what it tried
+        # to write, that flash never landed (phone locked, cable out, cancelled)
+        # and this is still the original. A marker from an older version has no
+        # fingerprints to check, so it still counts as changed.
+        import hashlib
+        prints = flashed_fingerprints(udid, card_hash)
+        if not prints or any(hashlib.sha256(d).hexdigest() in prints for _, d in originals):
+            return already_changed("was changed by AirCard")
+        never_landed = True
+
     if not save_card_backup(udid, card_hash, originals):
         # Every file came off the phone, so it was this Mac that could not keep
         # them: a full disk or a folder it may not write to. Told as a read
         # failure, people unlocked the phone and retried forever.
-        if len(originals) == len(BACKED_UP_ASSETS):
+        if all(n in dict(originals) for n in REQUIRED_ASSETS):
             print(json.dumps({
                 "type": "error", "card": card_hash, "code": "backup.write_failed",
                 "message": f"Read the original artwork for {card_hash[:12]}... but could not save it on this Mac (disk full, or the backup folder is not writable)"
@@ -152,7 +182,7 @@ def cmd_backup(udid: str, card_hash: str) -> bool:
             return False
         # Some but not all of the files came back: say so, and keep nothing,
         # rather than store a backup that would restore the card only partly.
-        partial = 0 < len(originals) < len(BACKED_UP_ASSETS)
+        partial = bool(originals)
         print(json.dumps({
             "type": "error", "card": card_hash,
             "code": "backup.incomplete" if partial else "backup.failed",
@@ -161,6 +191,8 @@ def cmd_backup(udid: str, card_hash: str) -> bool:
         sys.stdout.flush()
         return False
 
+    if never_landed:
+        clear_flashed_marker(udid, card_hash)
     print(json.dumps({
         "type": "success", "card": card_hash, "code": "backup.done",
         "message": f"Saved original artwork for {card_hash[:12]}..."
@@ -205,6 +237,16 @@ def cmd_restore(udid: str, card_hash: str) -> bool:
                 ok_single = False
             if not ok_single:
                 all_ok = False
+
+    # The card had no PDF of its own, but a flash wrote one; left there, it
+    # would put the skin straight back.
+    if PDF_ASSET_NAME not in dict(originals) and card_was_flashed(udid, card_hash):
+        try:
+            ok_pdf = remove_files(udid, pkpass_dir, [PDF_ASSET_NAME])
+        except Exception:
+            ok_pdf = False
+        if not ok_pdf:
+            all_ok = False
 
     # Same cache clearing the flash does, or Wallet keeps showing the skin.
     print(json.dumps({
@@ -262,13 +304,23 @@ def cmd_import_skins(source: str, library: str) -> bool:
     except Exception as e:
         print(json.dumps({"type": "error", "code": "skins.unreadable", "message": str(e)}))
         return False
-    ok = bool(result["imported"])
+    added = len(result["imported"])
+    left_out = {k: result[k] for k in ("skipped", "duplicates", "encrypted", "unsupported", "over_limit")}
+    if added:
+        code = "skins.imported"
+    elif result["duplicates"]:
+        # Everything that was a picture is already there; the rest of the
+        # pack (a readme, say) is not a reason to call it a failure.
+        code = "skins.nothing_new"
+    else:
+        code = "skins.none_found"
+    ok = code != "skins.none_found"
     print(json.dumps({
         "type": "success" if ok else "error",
-        "code": "skins.imported" if ok else "skins.none_found",
+        "code": code,
         "imported": result["imported"],
-        "skipped": result["skipped"],
-        "message": f"Imported {len(result['imported'])} picture(s), skipped {result['skipped']}.",
+        **left_out,
+        "message": f"Imported {added} picture(s); left out {left_out}.",
     }))
     return ok
 
@@ -281,7 +333,9 @@ def cmd_backups(udid: str):
         path = backup_preview_path(udid, card)
         if path:
             previews[card] = str(path)
-    print(json.dumps({"ok": True, "cards": cards, "previews": previews}))
+    # Cards AirCard has written to: their original cannot be saved any more,
+    # so the app does not keep asking to save it before each flash.
+    print(json.dumps({"ok": True, "cards": cards, "previews": previews, "flashed": list_flashed_cards(udid)}))
 
 
 def cmd_get_saved_cards():
@@ -356,7 +410,7 @@ def cmd_flash(udid: str, card_hash: str, image_path: str) -> bool:
     pkpass_dir = f"/var/mobile/Library/Passes/Cards/{card_hash}.pkpass"
     # Marked before the write rather than after it succeeds: a write that fails
     # part way can still have changed the card.
-    mark_card_flashed(udid, card_hash)
+    mark_card_flashed(udid, card_hash, asset_payloads)
     
     total_steps = 4
     step = 0
@@ -672,14 +726,14 @@ def cmd_inspect_passthm(passthm_path: str):
             print(json.dumps({"ok": False, "code": "passthm.no_images", "error": "No image assets found in archive"}))
             return
 
+        # Only names that are keys: every key image also comes out of the parse
+        # under a name like en-3---white.png. The raw file names kept alongside
+        # include wallpapers and covers, and picking any digit out of those put
+        # Wallpaper@3x.png on key 3 in the preview and in the Creator.
         keys_preview = {}
         for _, leaf, data in items:
-            m = re.search(r'^[a-zA-Z]+-([0-9*#])-?', leaf)
+            m = re.search(r'^[a-zA-Z]+-([0-9*#])-', leaf)
             digit = m.group(1) if m else None
-            if not digit:
-                m2 = re.search(r'([0-9*#])', leaf)
-                if m2:
-                    digit = m2.group(1)
             if digit and digit not in keys_preview:
                 b64 = base64.b64encode(data).decode("utf-8")
                 mime = "image/png" if leaf.lower().endswith(".png") else "image/jpeg"

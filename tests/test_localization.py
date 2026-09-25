@@ -79,6 +79,7 @@ class LocalizationTests(unittest.TestCase):
     NAMES_A_BUTTON = {
         "status.iphone_needs_trust_check": "ui.check_again",
         "onboard.connect_trust_check": "ui.check_again",
+        "ui.read_originals_to_see": "ui.read_originals",
     }
 
     def test_instructions_name_the_button_as_it_is_labelled(self):
@@ -91,6 +92,23 @@ class LocalizationTests(unittest.TestCase):
                 label = entries[button].rstrip(".…").strip()
                 self.assertIn(label, entries[sentence],
                               f"{lang} / {sentence} does not name the button as {button} labels it ({label!r})")
+
+    def test_privacy_reasons_exist_in_every_language(self):
+        """The Info.plist reasons macOS shows before AirCard reads Downloads and
+        the like. Without InfoPlist.strings every language gets the English."""
+        script = (REPO / "build.sh").read_text(encoding="utf-8")
+        plist = dict(re.findall(r"<key>(NS\w+UsageDescription)</key>\s*<string>([^<]*)</string>", script))
+        self.assertTrue(plist, "no usage descriptions found in build.sh")
+        english = parse(LOCALES / "en.lproj" / "InfoPlist.strings")
+        self.assertEqual(english, plist, "en InfoPlist.strings must say what Info.plist says")
+        for lang_dir in sorted(LOCALES.glob("*.lproj")):
+            path = lang_dir / "InfoPlist.strings"
+            self.assertTrue(path.exists(), f"{lang_dir.name} has no InfoPlist.strings")
+            entries = parse(path)
+            self.assertEqual(sorted(entries), sorted(plist), f"{lang_dir.name} InfoPlist.strings keys")
+            if lang_dir.name != "en.lproj":
+                for key in plist:
+                    self.assertNotEqual(entries[key], plist[key], f"{lang_dir.name} / {key} is still English")
 
     def test_base_is_not_empty(self):
         self.assertGreater(len(self.base), 50, "English source looks truncated")

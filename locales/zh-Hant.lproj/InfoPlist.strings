@@ -1,0 +1,7 @@
+/* Reasons macOS shows when AirCard asks to read a protected folder (zh-Hant). Keys match Info.plist. */
+
+"NSDesktopFolderUsageDescription" = "AirCard 會在這裡尋找自己的其他副本，好讓你選擇是否清理，也會讀取你從這裡加入的卡片圖片。";
+"NSDocumentsFolderUsageDescription" = "AirCard 會在這裡尋找自己的其他副本，好讓你選擇是否清理，也會讀取你從這裡加入的卡片圖片。";
+"NSDownloadsFolderUsageDescription" = "AirCard 會在這裡尋找自己的其他副本，好讓你選擇是否清理，也會讀取你從這裡加入的卡片圖片。";
+"NSNetworkVolumesUsageDescription" = "AirCard 會從這個網路磁碟讀取你選擇的卡片圖片和密碼主題。";
+"NSRemovableVolumesUsageDescription" = "AirCard 會從這個磁碟讀取你選擇的卡片圖片和密碼主題。";

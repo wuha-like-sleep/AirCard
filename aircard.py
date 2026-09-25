@@ -48,6 +48,10 @@ TARGET_ASSETS = [
 # skin straight back on a card the user just restored.
 from card_assets import PNG_ASSET_NAMES, PDF_ASSET_NAME
 BACKED_UP_ASSETS = [*PNG_ASSET_NAMES, PDF_ASSET_NAME]
+# Some cards have no PDF of their own. Requiring one made Save Original fail on
+# them for ever while telling people to unlock the phone and retry; the PNGs
+# are the artwork, and a restore removes a PDF the skin added (cmd_restore).
+REQUIRED_ASSETS = list(PNG_ASSET_NAMES)
 
 CACHE_FILES = ["FrontFace", "Preview"]
 
@@ -106,7 +110,7 @@ def has_card_backup(udid: str, card_hash: str, required=None) -> bool:
     reporting success, and would also block a proper backup being taken, so it
     does not count.
     """
-    names = BACKED_UP_ASSETS if required is None else required
+    names = REQUIRED_ASSETS if required is None else required
     d = card_backup_dir(udid, card_hash)
     if not d.is_dir():
         return False
@@ -122,10 +126,12 @@ def save_card_backup(udid: str, card_hash: str, assets: list[tuple[str, bytes]],
     later looks complete.
     """
     import shutil
-    names = BACKED_UP_ASSETS if required is None else required
+    names = REQUIRED_ASSETS if required is None else required
     got = {name: data for name, data in assets if data}
     if any(n not in got for n in names):
         return False
+    # Whatever else of the card's own artwork came back is kept too.
+    names = list(names) + [n for n in BACKED_UP_ASSETS if n in got and n not in names]
     d = card_backup_dir(udid, card_hash)
     staging = d.with_name(d.name + ".partial")
     try:
@@ -155,22 +161,65 @@ def _flashed_marker(udid: str, card_hash: str) -> Path:
     return BACKUPS_ROOT / _backup_slug(udid) / ".flashed" / _backup_slug(card_hash)
 
 
-def mark_card_flashed(udid: str, card_hash: str) -> None:
-    """Remembers that AirCard has written to this card.
+def mark_card_flashed(udid: str, card_hash: str, assets=None) -> None:
+    """Remembers that AirCard has written, or tried to write, to this card.
 
-    After that, what is on the card is not its original any more, and saving
-    it as the original would lock the skin in as the thing restore puts back.
+    After that, what is on the card may not be its original any more, and
+    saving it as the original would lock the skin in as the thing restore puts
+    back. The marker also keeps a fingerprint of every file about to be
+    written, so a flash that never reached the card (phone locked, cable out,
+    cancelled) can later be told apart from one that did.
     """
+    import hashlib
     m = _flashed_marker(udid, card_hash)
     try:
         m.parent.mkdir(parents=True, exist_ok=True)
-        m.touch()
+        prints = flashed_fingerprints(udid, card_hash)
+        for _, data in assets or []:
+            prints.add(hashlib.sha256(data).hexdigest())
+        m.write_text(json.dumps(sorted(prints)))
     except OSError:
         pass
 
 
+def flashed_fingerprints(udid: str, card_hash: str) -> set:
+    """Fingerprints of what AirCard tried to write to the card. Empty for a
+    marker left by an older version, which kept none."""
+    try:
+        data = json.loads(_flashed_marker(udid, card_hash).read_text() or "[]")
+    except (OSError, ValueError):
+        return set()
+    return {x for x in data if isinstance(x, str)} if isinstance(data, list) else set()
+
+
 def card_was_flashed(udid: str, card_hash: str) -> bool:
     return _flashed_marker(udid, card_hash).exists()
+
+
+def clear_flashed_marker(udid: str, card_hash: str) -> None:
+    try:
+        _flashed_marker(udid, card_hash).unlink()
+    except OSError:
+        pass
+
+
+def list_flashed_cards(udid: str) -> list:
+    """Cards AirCard has written to on this device, as far as this Mac knows."""
+    from urllib.parse import unquote
+    folder = BACKUPS_ROOT / _backup_slug(udid) / ".flashed"
+    if not folder.is_dir():
+        return []
+    return sorted(unquote(m.name) for m in folder.iterdir() if m.is_file())
+
+
+def looks_skinned_by_aircard(assets) -> bool:
+    """A flash writes one picture as both sizes; Apple's own artwork never has
+    the same bytes at two resolutions. This catches cards skinned by an older
+    AirCard, or on another Mac, where there is no marker to go by."""
+    got = dict(assets)
+    big = got.get("cardBackgroundCombined@3x.png")
+    small = got.get("cardBackgroundCombined@2x.png")
+    return bool(big) and big == small
 
 
 def read_card_backup(udid: str, card_hash: str) -> list[tuple[str, bytes]]:
@@ -221,7 +270,7 @@ def list_backed_up_cards(udid: str) -> list[str]:
 # survive a relaunch, unlike the temp files dropped images used to live in.
 SKIN_EXTENSIONS = {"png": ".png", "jpg": ".jpg", "heic": ".heic", "webp": ".webp"}
 MAX_SKIN_BYTES = 30 * 1024 * 1024
-MAX_PACK_BYTES = 400 * 1024 * 1024
+MAX_PACK_BYTES = 400_000_000  # decimal, as the app shows sizes
 MAX_PACK_IMAGES = 400
 MAX_FOLDER_FILES = 5000
 
@@ -239,17 +288,79 @@ def skin_image_kind(data: bytes) -> "str | None":
     return None
 
 
-def _skin_name(original: str, kind: str, taken: set) -> str:
+# Folders that are single things to Finder: apps, photo libraries and the like.
+# A folder import never walks into them, so picking the wrong folder cannot
+# pull an app's icons or a photo library into the skin library.
+PACKAGE_SUFFIXES = (
+    ".app", ".bundle", ".framework", ".plugin", ".appex", ".kext", ".xcassets",
+    ".photoslibrary", ".photolibrary", ".migratedphotolibrary", ".aplibrary",
+    ".musiclibrary", ".tvlibrary", ".imovielibrary", ".fcpbundle", ".lrdata", ".lrlibrary",
+)
+IMAGE_NAME = re.compile(r"\.(png|jpe?g|heic|heif|webp)$", re.IGNORECASE)
+
+
+def _path_parts(original: str) -> list:
+    return [p for p in original.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+
+
+def _stem_key(original: str) -> str:
+    parts = _path_parts(original)
+    leaf = parts[-1] if parts else ""
+    dot = leaf.rfind(".")
+    return (leaf[:dot] if dot > 0 else leaf).lower()
+
+
+def _repeated_stems(names) -> set:
+    """Stems that more than one picture in the pack shares, like card.png in
+    one folder per bank. Those get their folder's name, or every bank's card
+    would arrive as card, card-2, card-3."""
+    counts: dict = {}
+    for name in names:
+        if IMAGE_NAME.search(name):
+            key = _stem_key(name)
+            counts[key] = counts.get(key, 0) + 1
+    return {k for k, n in counts.items() if n > 1}
+
+
+def _zip_entry_name(info) -> str:
+    """The entry's name as it was meant to be read.
+
+    Zips made on Chinese-language Windows store GBK names without saying so,
+    and Python reads those as cp437: 招商银行.png arrives as mojibake and the
+    bank's name is lost. Only names without the UTF-8 flag are reinterpreted.
+    """
+    name = info.filename
+    if info.flag_bits & 0x800:
+        return name
+    try:
+        raw = name.encode("cp437")
+    except UnicodeEncodeError:
+        return name  # already real text, from a Unicode path field
+    if not any(b >= 0x80 for b in raw):
+        return name
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return name
+
+
+def _skin_name(original: str, kind: str, taken: set, qualify: bool = False) -> str:
     """A safe, unique file name inside the library.
 
-    Only the last path component is ever used, so an entry like ../../x.png
-    cannot land outside the library folder.
+    Only path components are used, never the path, so an entry like
+    ../../x.png cannot land outside the library folder. With qualify, the
+    folder the picture was in goes in front of its name.
     """
-    leaf = original.replace("\\", "/").split("/")[-1]
+    parts = _path_parts(original)
+    leaf = parts[-1] if parts else ""
     # Split by hand: pathlib has changed its mind about names like "..png"
     # between Python versions, and the app runs whichever one the Mac has.
     dot = leaf.rfind(".")
     stem = leaf[:dot] if dot > 0 else leaf
+    if qualify and len(parts) >= 2:
+        stem = f"{parts[-2]} {stem}"
     stem = re.sub(r"[^\w .+=-]+", "_", stem)
     stem = re.sub(r"\s+", " ", stem).strip(" ._")[:80].rstrip(" .") or "skin"
     ext = SKIN_EXTENSIONS[kind]
@@ -266,38 +377,74 @@ def import_skins(source: Path, library: Path) -> dict:
     Anything that is not really an image is left behind, however it is named.
     Sizes are checked both against what each file claims and against what is
     actually read, so a zip that lies about its contents cannot fill the disk.
+    A picture already in the library is not copied again.
+
+    Returns the names added and, for everything else, why it was left out:
+    skipped (not a picture, too big or damaged), duplicates, encrypted (in a
+    password-protected zip), unsupported (zip compression Python cannot read)
+    and over_limit (past the per-import caps). Each needs a different answer.
     """
+    import hashlib
     import zipfile
     library.mkdir(parents=True, exist_ok=True)
     taken = {p.name.lower() for p in library.iterdir()}
-    imported: list[str] = []
-    skipped = 0
+    by_size: dict = {}
+    for existing in library.iterdir():
+        if existing.is_file() and not existing.name.startswith("."):
+            by_size.setdefault(existing.stat().st_size, []).append(existing)
+    known: set = set()
+    hashed: set = set()
+    result = {"imported": [], "skipped": 0, "duplicates": 0,
+              "encrypted": 0, "unsupported": 0, "over_limit": 0}
     total = 0
 
-    def keep(original: str, data: bytes) -> bool:
+    def already_have(data: bytes) -> bool:
+        # Only pictures of the same size are ever read back and hashed.
+        for path in by_size.get(len(data), []):
+            if path not in hashed:
+                hashed.add(path)
+                try:
+                    known.add(hashlib.sha256(path.read_bytes()).digest())
+                except OSError:
+                    pass
+        digest = hashlib.sha256(data).digest()
+        if digest in known:
+            return True
+        known.add(digest)  # the same picture twice in one pack counts once
+        return False
+
+    def keep(original: str, data: bytes, qualify: bool) -> None:
         kind = skin_image_kind(data)
         if kind is None or len(data) > MAX_SKIN_BYTES:
-            return False
-        name = _skin_name(original, kind, taken)
-        (library / name).write_bytes(data)
-        imported.append(name)
-        return True
-
-    def consider(leaf: str, size, read) -> None:
-        nonlocal skipped, total
-        if len(imported) >= MAX_PACK_IMAGES or total >= MAX_PACK_BYTES or size is None or size > MAX_SKIN_BYTES:
-            skipped += 1
+            result["skipped"] += 1
             return
-        # One damaged, locked or oddly compressed file costs only itself; the
-        # rest of the pack still comes in.
+        if already_have(data):
+            result["duplicates"] += 1
+            return
+        name = _skin_name(original, kind, taken, qualify)
+        (library / name).write_bytes(data)
+        result["imported"].append(name)
+
+    def consider(original: str, size, read, image_like: bool, qualify: bool = False) -> None:
+        nonlocal total
+        if len(result["imported"]) >= MAX_PACK_IMAGES or total >= MAX_PACK_BYTES:
+            result["over_limit" if image_like else "skipped"] += 1
+            return
+        if size is None or size > MAX_SKIN_BYTES:
+            result["skipped"] += 1
+            return
+        # One damaged or oddly compressed file costs only itself; the rest of
+        # the pack still comes in.
         try:
             data = read()
+        except NotImplementedError:
+            result["unsupported" if image_like else "skipped"] += 1
+            return
         except Exception:
-            skipped += 1
+            result["skipped"] += 1
             return
         total += len(data)
-        if not keep(leaf, data):
-            skipped += 1
+        keep(original, data, qualify)
 
     def size_of(path: Path):
         try:
@@ -312,36 +459,49 @@ def import_skins(source: Path, library: Path) -> dict:
     if source.is_dir():
         # A pack unzipped in Finder and dropped in as a folder. Walking stops
         # after a bounded number of files, in case it was the wrong folder.
-        seen = 0
+        candidates = []
         for root, dirs, files in os.walk(source):
-            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__MACOSX")
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__MACOSX"
+                             and not d.lower().endswith(PACKAGE_SUFFIXES))
             for name in sorted(files):
-                if name.startswith("."):
-                    continue
-                seen += 1
-                if seen > MAX_FOLDER_FILES:
-                    return {"imported": imported, "skipped": skipped}
-                path = Path(root) / name
-                if path.is_symlink():
-                    skipped += 1
-                    continue
-                consider(name, size_of(path), lambda: read_path(path))
+                if not name.startswith("."):
+                    candidates.append(Path(root) / name)
+            if len(candidates) >= MAX_FOLDER_FILES:
+                break
+        candidates = candidates[:MAX_FOLDER_FILES]
+        relative = [str(path.relative_to(source)) for path in candidates]
+        repeated = _repeated_stems(relative)
+        for path, rel in zip(candidates, relative):
+            if path.is_symlink():
+                result["skipped"] += 1
+                continue
+            consider(rel, size_of(path), lambda path=path: read_path(path),
+                     bool(IMAGE_NAME.search(rel)), _stem_key(rel) in repeated)
     elif zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as z:
+            entries = []
             for info in z.infolist():
-                leaf = info.filename.replace("\\", "/").split("/")[-1]
+                name = _zip_entry_name(info).replace("\\", "/")
+                leaf = name.split("/")[-1]
                 # Finder's __MACOSX copies are all ._ files, so the dot rule covers them.
                 if info.is_dir() or not leaf or leaf.startswith("."):
+                    continue
+                entries.append((info, name))
+            repeated = _repeated_stems(name for _, name in entries)
+            for info, name in entries:
+                image_like = bool(IMAGE_NAME.search(name))
+                if info.flag_bits & 0x1:
+                    result["encrypted" if image_like else "skipped"] += 1
                     continue
 
                 def read_entry(info=info) -> bytes:
                     with z.open(info) as f:
                         return f.read(MAX_SKIN_BYTES + 1)
 
-                consider(leaf, info.file_size, read_entry)
+                consider(name, info.file_size, read_entry, image_like, _stem_key(name) in repeated)
     else:
-        consider(source.name, size_of(source), lambda: read_path(source))
-    return {"imported": imported, "skipped": skipped}
+        consider(source.name, size_of(source), lambda: read_path(source), bool(IMAGE_NAME.search(source.name)))
+    return result
 
 
 def find_device_helper() -> str | None:
@@ -354,20 +514,44 @@ def find_device_helper() -> str | None:
     return None
 
 
-def list_devices() -> list[dict]:
+class HelperError(Exception):
+    """The device helper itself failed, which is not the same as no phone.
+
+    Reported as "no phone", it sent people swapping cables for a problem on
+    the Mac: the helper crashed, timed out, or was stopped by macOS.
+    """
+
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(detail or code)
+        self.code = code
+        self.detail = detail
+
+
+def list_devices(strict: bool = False) -> list[dict]:
     """Enumerates paired devices reachable over USB.
 
     Wi-Fi-paired devices can appear here too, and an entry whose session could
-    not be opened is reported with an empty `product`.
+    not be opened is reported with an empty `product`. With strict, a helper
+    that fails raises HelperError instead of looking like an empty list.
     """
     helper = find_device_helper()
     if not helper:
         return []
     try:
         output = subprocess.check_output(
-            [helper, "list"], text=True, stderr=subprocess.DEVNULL, timeout=30
+            [helper, "list"], text=True, stderr=subprocess.PIPE, timeout=30
         )
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        if strict:
+            raise HelperError("helper_timeout", "the device helper did not answer within 30 seconds")
+        return []
+    except subprocess.CalledProcessError as e:
+        if strict:
+            raise HelperError("helper_failed", f"exit {e.returncode}: {(e.stderr or '')[-400:]}")
+        return []
+    except OSError as e:
+        if strict:
+            raise HelperError("helper_failed", str(e))
         return []
 
     for line in reversed(output.splitlines()):
@@ -421,33 +605,38 @@ def _device_sort_key(device: dict) -> tuple:
     )
 
 
-def survey_devices() -> tuple[list[dict], int]:
-    """Usable devices, best first, plus how many were seen but could not be opened.
+def survey_devices(strict: bool = False) -> tuple[list[dict], int]:
+    """Usable devices, best first, plus how many phones are waiting on Trust.
 
-    A phone that has not trusted this Mac yet comes back with a udid and nothing
-    else. Dropping it quietly is what made the app say "No iPhone found" while
-    the phone sat on the desk asking to be trusted. One enumeration serves both,
-    since each one can raise the Trust prompt on the phone again.
+    A phone that has not trusted this Mac yet comes back over USB with a udid
+    and nothing else. Dropping it quietly is what made the app say "No iPhone
+    found" while the phone sat on the desk asking to be trusted. One
+    enumeration serves both, since each one can raise the Trust prompt again.
+
+    A device seen only over the network that cannot be opened is left out
+    altogether: an old Wi-Fi-paired iPad on the same network has nothing to
+    trust, yet counting it said "tap Trust" with no phone attached at all.
     """
-    seen = [d for d in list_devices() if d.get("udid")]
+    seen = [d for d in list_devices(strict=strict) if d.get("udid")]
     usable = [d for d in seen if d.get("product")]
+    untrusted = [d for d in seen if not d.get("product") and d.get("connection") != "network"]
     usable.sort(key=_device_sort_key)
-    return [_normalize_device(d) for d in usable], len(seen) - len(usable)
+    return [_normalize_device(d) for d in usable], len(untrusted)
 
 
-def list_connected_devices() -> list[dict]:
+def list_connected_devices(strict: bool = False) -> list[dict]:
     """Returns every usable device, deterministically ordered (best first)."""
-    return survey_devices()[0]
+    return survey_devices(strict=strict)[0]
 
 
-def get_connected_device(preferred_udid: str | None = None) -> dict | None:
+def get_connected_device(preferred_udid: str | None = None, strict: bool = False) -> dict | None:
     """Picks a connected iPhone, honoring an explicit target when one is given.
 
     A preferred_udid must match exactly. If that phone is gone this returns None
     instead of quietly handing back a different one, so a flash never lands on a
     phone nobody picked. Only automatic selection falls back to the best device.
     """
-    devices = list_connected_devices()
+    devices = list_connected_devices(strict=strict)
     if not devices:
         return None
     if preferred_udid:

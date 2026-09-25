@@ -1,0 +1,7 @@
+/* Reasons macOS shows when AirCard asks to read a protected folder (es). Keys match Info.plist. */
+
+"NSDesktopFolderUsageDescription" = "AirCard busca aquí otras copias de la app para ofrecerte quitar las que sobren. También abre desde aquí las imágenes de tarjeta que añadas.";
+"NSDocumentsFolderUsageDescription" = "AirCard busca aquí otras copias de la app para ofrecerte quitar las que sobren. También abre desde aquí las imágenes de tarjeta que añadas.";
+"NSDownloadsFolderUsageDescription" = "AirCard busca aquí otras copias de la app para ofrecerte quitar las que sobren. También abre desde aquí las imágenes de tarjeta que añadas.";
+"NSNetworkVolumesUsageDescription" = "AirCard lee de este volumen de red las imágenes de tarjeta y los temas de código que elijas.";
+"NSRemovableVolumesUsageDescription" = "AirCard lee de este disco las imágenes de tarjeta y los temas de código que elijas.";

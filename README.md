@@ -27,7 +27,7 @@
 
 ### macOS (Universal DMG)
 1. Download **`AirCard.dmg`** from [Releases](https://github.com/mak5er/AirCard/releases).
-2. Open `AirCard.dmg` and drag **`AirCard.app`** into your **Applications** folder.
+2. Open `AirCard.dmg` and drag **`AirCard.app`** into your **Applications** folder. If Finder asks, choose **Replace**, not **Keep Both**: cards, saved originals and the skin library live outside the app and are kept. Opened from anywhere else, AirCard offers to move itself into Applications and to clear out older copies.
 3. Fully compatible with both **Apple Silicon** and **Intel (x86)** Macs.
 
 > [!NOTE]

@@ -50,8 +50,8 @@ class BackupStorageTests(_TempBackups):
         self.assertEqual(dict(aircard.read_card_backup(UDID, CARD)), dict(complete()))
 
     def test_a_partial_set_is_refused_and_nothing_is_written(self):
-        """Two of three files would restore the card only partly."""
-        self.assertFalse(aircard.save_card_backup(UDID, CARD, complete()[:-1]))
+        """One size of the artwork alone would restore the card only partly."""
+        self.assertFalse(aircard.save_card_backup(UDID, CARD, complete()[1:]))
         self.assertFalse(aircard.has_card_backup(UDID, CARD))
         self.assertFalse(aircard.card_backup_dir(UDID, CARD).exists())
 
@@ -64,7 +64,7 @@ class BackupStorageTests(_TempBackups):
         """A backup left incomplete by an older version must not pass as whole."""
         d = aircard.card_backup_dir(UDID, CARD)
         d.mkdir(parents=True)
-        for n, data in complete()[:-1]:
+        for n, data in complete()[1:]:
             (d / n).write_bytes(data)
         self.assertFalse(aircard.has_card_backup(UDID, CARD))
         self.assertEqual(aircard.list_backed_up_cards(UDID), [])
@@ -154,6 +154,44 @@ class RestoreCommandTests(_TempBackups):
         self.assertEqual(events[-1]["code"], "restore.failed")
 
 
+class NoPdfOfItsOwnTests(_TempBackups):
+    """Some cards have no PDF. Requiring one made their original impossible
+    to save, while the message said to unlock the phone and try again."""
+
+    PNGS = [(n, d) for n, d in complete() if n.endswith(".png")]
+
+    def test_a_card_without_a_pdf_can_have_its_original_saved(self):
+        on_card = dict(self.PNGS)
+        with patch.object(aircard_backend, "read_file", Mock(side_effect=lambda u, t, leaf: on_card.get(leaf))):
+            ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
+        self.assertTrue(ok)
+        self.assertEqual(events[-1]["code"], "backup.done")
+        self.assertTrue(aircard.has_card_backup(UDID, CARD))
+
+    def test_restoring_it_removes_the_pdf_the_skin_added(self):
+        aircard.save_card_backup(UDID, CARD, self.PNGS)
+        aircard.mark_card_flashed(UDID, CARD, complete(b"skin"))
+        remove = Mock(return_value=True)
+        with patch.object(aircard_backend, "write_files_batch", Mock(return_value=True)), \
+                patch.object(aircard_backend, "remove_files", remove):
+            ok, events = self._events(aircard_backend.cmd_restore, UDID, CARD)
+        self.assertTrue(ok)
+        removed = [call.args[2] for call in remove.call_args_list]
+        self.assertIn([aircard.PDF_ASSET_NAME], removed)
+
+    def test_a_card_never_flashed_is_not_asked_to_lose_a_pdf(self):
+        aircard.save_card_backup(UDID, CARD, self.PNGS)
+        remove = Mock(return_value=True)
+        with patch.object(aircard_backend, "write_files_batch", Mock(return_value=True)), \
+                patch.object(aircard_backend, "remove_files", remove):
+            self._events(aircard_backend.cmd_restore, UDID, CARD)
+        self.assertNotIn([aircard.PDF_ASSET_NAME], [call.args[2] for call in remove.call_args_list])
+
+    def test_a_pdf_that_came_back_is_kept_with_the_original(self):
+        aircard.save_card_backup(UDID, CARD, complete())
+        self.assertIn(aircard.PDF_ASSET_NAME, dict(aircard.read_card_backup(UDID, CARD)))
+
+
 class BackupCommandTests(_TempBackups):
     def _reader(self, missing=()):
         data = dict(complete(b"phone"))
@@ -167,7 +205,7 @@ class BackupCommandTests(_TempBackups):
         self.assertTrue(aircard.has_card_backup(UDID, CARD))
 
     def test_one_unreadable_file_means_no_backup_and_says_so(self):
-        with patch.object(aircard_backend, "read_file", self._reader(missing={NAMES[-1]})):
+        with patch.object(aircard_backend, "read_file", self._reader(missing={NAMES[0]})):
             ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
         self.assertFalse(ok)
         self.assertEqual(events[-1]["code"], "backup.incomplete")
@@ -218,16 +256,56 @@ class BackupCommandTests(_TempBackups):
         reader.assert_not_called()
         self.assertEqual(dict(aircard.read_card_backup(UDID, CARD)), dict(complete(b"pristine")))
 
-    def test_a_card_already_skinned_by_aircard_is_not_saved_as_the_original(self):
-        """Saving it would make restore put the skin back, for good."""
+    def _on_card(self, payload):
+        data = dict(payload)
+        return Mock(side_effect=lambda udid, target, leaf: data.get(leaf))
+
+    def test_a_card_marked_by_an_older_version_is_not_saved_as_the_original(self):
+        """Such a marker has no fingerprints to check, so it counts as changed."""
         aircard.mark_card_flashed(UDID, CARD)
-        reader = Mock()
-        with patch.object(aircard_backend, "read_file", reader):
+        with patch.object(aircard_backend, "read_file", self._on_card(complete())):
             ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
         self.assertFalse(ok)
         self.assertEqual(events[-1]["code"], "backup.already_changed")
-        reader.assert_not_called()
         self.assertFalse(aircard.has_card_backup(UDID, CARD))
+
+    def test_a_card_that_got_the_skin_is_not_saved_as_the_original(self):
+        skin = complete(b"skin")
+        aircard.mark_card_flashed(UDID, CARD, skin)
+        on_card = complete(b"orig")
+        on_card[0] = skin[0]  # one file of the skin landed before the write failed
+        with patch.object(aircard_backend, "read_file", self._on_card(on_card)):
+            ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
+        self.assertFalse(ok)
+        self.assertEqual(events[-1]["code"], "backup.already_changed")
+
+    def test_a_flash_that_never_landed_does_not_block_saving_the_original(self):
+        """Phone locked, cable out, or cancelled: nothing on the card is the skin."""
+        aircard.mark_card_flashed(UDID, CARD, complete(b"skin"))
+        with patch.object(aircard_backend, "read_file", self._on_card(complete(b"orig"))):
+            ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
+        self.assertTrue(ok)
+        self.assertEqual(events[-1]["code"], "backup.done")
+        self.assertEqual(dict(aircard.read_card_backup(UDID, CARD)), dict(complete(b"orig")))
+        self.assertFalse(aircard.card_was_flashed(UDID, CARD))
+
+    def test_a_card_skinned_elsewhere_is_recognised_without_a_marker(self):
+        """An older AirCard, or another Mac, leaves no marker here. A flash
+        writes one picture as both sizes, which Apple's artwork never is."""
+        payload = dict(complete(b"orig"))
+        payload["cardBackgroundCombined@2x.png"] = payload["cardBackgroundCombined@3x.png"]
+        with patch.object(aircard_backend, "read_file", self._on_card(payload.items())):
+            ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
+        self.assertFalse(ok)
+        self.assertEqual(events[-1]["code"], "backup.already_changed")
+        self.assertFalse(aircard.has_card_backup(UDID, CARD))
+
+    def test_a_marked_card_that_cannot_be_read_fully_says_so_and_not_changed(self):
+        aircard.mark_card_flashed(UDID, CARD, complete(b"skin"))
+        with patch.object(aircard_backend, "read_file", self._on_card(complete(b"orig")[1:])):
+            ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
+        self.assertFalse(ok)
+        self.assertEqual(events[-1]["code"], "backup.incomplete")
 
     def test_discard_command(self):
         aircard.save_card_backup(UDID, CARD, complete())
@@ -238,25 +316,36 @@ class BackupCommandTests(_TempBackups):
 
 
 class FlashMarksCardTests(_TempBackups):
-    def test_a_flash_records_that_the_card_was_changed(self):
-        with patch.object(aircard_backend, "build_card_assets", return_value=complete()), \
-                patch.object(aircard_backend, "write_files_batch", return_value=True), \
+    def _flash(self, write_ok):
+        with patch.object(aircard_backend, "build_card_assets", return_value=complete(b"skin")), \
+                patch.object(aircard_backend, "write_files_batch", return_value=write_ok), \
+                patch.object(aircard_backend, "write_file", return_value=write_ok), \
                 patch.object(aircard_backend, "remove_files", return_value=True), \
                 tempfile.NamedTemporaryFile(suffix=".png") as img, \
                 redirect_stdout(io.StringIO()):
             aircard_backend.cmd_flash(UDID, CARD, img.name)
+
+    def test_a_flash_records_what_it_wrote(self):
+        import hashlib
+        self._flash(True)
         self.assertTrue(aircard.card_was_flashed(UDID, CARD))
+        self.assertEqual(aircard.flashed_fingerprints(UDID, CARD),
+                         {hashlib.sha256(d).hexdigest() for _, d in complete(b"skin")})
 
     def test_a_failed_flash_still_counts(self):
         """A write that fails part way can still have changed the card."""
-        with patch.object(aircard_backend, "build_card_assets", return_value=complete()), \
-                patch.object(aircard_backend, "write_files_batch", return_value=False), \
-                patch.object(aircard_backend, "write_file", return_value=False), \
-                patch.object(aircard_backend, "remove_files", return_value=True), \
-                tempfile.NamedTemporaryFile(suffix=".png") as img, \
-                redirect_stdout(io.StringIO()):
-            aircard_backend.cmd_flash(UDID, CARD, img.name)
+        self._flash(False)
         self.assertTrue(aircard.card_was_flashed(UDID, CARD))
+
+    def test_a_second_flash_keeps_the_first_ones_fingerprints(self):
+        aircard.mark_card_flashed(UDID, CARD, [("a", b"first")])
+        aircard.mark_card_flashed(UDID, CARD, [("a", b"second")])
+        self.assertEqual(len(aircard.flashed_fingerprints(UDID, CARD)), 2)
+
+    def test_the_app_is_told_which_cards_were_flashed(self):
+        aircard.mark_card_flashed(UDID, CARD, complete(b"skin"))
+        _, events = self._events(aircard_backend.cmd_backups, UDID)
+        self.assertEqual(events[-1]["flashed"], [CARD])
 
 
 class OriginalPreviewTests(_TempBackups):
