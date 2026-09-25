@@ -6,21 +6,11 @@
    Drag the "AirCard" icon onto the "Applications" folder.
 
 2. FIRST LAUNCH
-   This copy of AirCard is not notarised by Apple, so macOS stops it the
-   first time you open it.
+   Open AirCard from Applications. macOS asks once whether you want to open
+   an app downloaded from the internet; click Open.
 
-   On macOS 15 or later:
-   - Open AirCard once. When macOS says it cannot be opened, click Done.
-   - Open System Settings > Privacy & Security and scroll down to Security.
-   - Next to the message about AirCard, click "Open Anyway" and confirm
-     with your Mac password.
-
-   On macOS 14: Control-click AirCard in Applications, choose Open, then
-   click Open.
-
-   If macOS says AirCard "is damaged", open Terminal and run:
-     xattr -dr com.apple.quarantine /Applications/AirCard.app
-   then open AirCard again.
+   If macOS still refuses, open System Settings > Privacy & Security, scroll
+   down to Security and click "Open Anyway" next to the message about AirCard.
 
 3. WHAT AIRCARD NEEDS
    Apple Silicon or Intel Mac, macOS 14 or later. AirCard uses the Python 3

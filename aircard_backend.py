@@ -61,6 +61,7 @@ from aircard import (
     backup_preview_path,
     card_was_flashed,
     discard_card_backup,
+    import_skins,
     list_connected_devices,
     mark_card_flashed,
     load_saved_cards,
@@ -139,6 +140,16 @@ def cmd_backup(udid: str, card_hash: str) -> bool:
             originals.append((asset, data))
 
     if not save_card_backup(udid, card_hash, originals):
+        # Every file came off the phone, so it was this Mac that could not keep
+        # them: a full disk or a folder it may not write to. Told as a read
+        # failure, people unlocked the phone and retried forever.
+        if len(originals) == len(BACKED_UP_ASSETS):
+            print(json.dumps({
+                "type": "error", "card": card_hash, "code": "backup.write_failed",
+                "message": f"Read the original artwork for {card_hash[:12]}... but could not save it on this Mac (disk full, or the backup folder is not writable)"
+            }))
+            sys.stdout.flush()
+            return False
         # Some but not all of the files came back: say so, and keep nothing,
         # rather than store a backup that would restore the card only partly.
         partial = 0 < len(originals) < len(BACKED_UP_ASSETS)
@@ -238,6 +249,27 @@ def cmd_discard_backup(udid: str, card_hash: str) -> bool:
         "message": "Saved original removed." if ok else "Could not remove the saved original."
     }))
     sys.stdout.flush()
+    return ok
+
+
+def cmd_import_skins(source: str, library: str) -> bool:
+    src = Path(source)
+    if not src.exists():
+        print(json.dumps({"type": "error", "code": "skins.not_found", "message": "The file to import was not found."}))
+        return False
+    try:
+        result = import_skins(src, Path(library))
+    except Exception as e:
+        print(json.dumps({"type": "error", "code": "skins.unreadable", "message": str(e)}))
+        return False
+    ok = bool(result["imported"])
+    print(json.dumps({
+        "type": "success" if ok else "error",
+        "code": "skins.imported" if ok else "skins.none_found",
+        "imported": result["imported"],
+        "skipped": result["skipped"],
+        "message": f"Imported {len(result['imported'])} picture(s), skipped {result['skipped']}.",
+    }))
     return ok
 
 
@@ -629,7 +661,7 @@ def detect_theme_version(names) -> str:
 def cmd_inspect_passthm(passthm_path: str):
     path = Path(passthm_path).expanduser()
     if not path.is_file():
-        print(json.dumps({"ok": False, "error": f"File not found: {passthm_path}"}))
+        print(json.dumps({"ok": False, "code": "passthm.missing", "error": f"File not found: {passthm_path}"}))
         return
     try:
         with zipfile.ZipFile(path, "r") as z:
@@ -637,7 +669,7 @@ def cmd_inspect_passthm(passthm_path: str):
 
         items = parse_passthm_archive(str(path), detected_ver)
         if not items:
-            print(json.dumps({"ok": False, "error": "No image assets found in archive"}))
+            print(json.dumps({"ok": False, "code": "passthm.no_images", "error": "No image assets found in archive"}))
             return
 
         keys_preview = {}
@@ -660,8 +692,12 @@ def cmd_inspect_passthm(passthm_path: str):
             "file_count": len(items),
             "keys_preview": keys_preview
         }))
+    # The app picks what to tell the person from the code; the English error
+    # is for the log.
+    except zipfile.BadZipFile as e:
+        print(json.dumps({"ok": False, "code": "passthm.not_a_theme", "error": str(e)}))
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        print(json.dumps({"ok": False, "code": "passthm.unreadable", "error": str(e)}))
 
 
 def cmd_flash_passthm(
@@ -815,6 +851,9 @@ def main():
         cmd_backups(sys.argv[2])
     elif norm_cmd == "backup" and len(sys.argv) > 3:
         if not cmd_backup(sys.argv[2], sys.argv[3]):
+            sys.exit(1)
+    elif norm_cmd == "import-skins" and len(sys.argv) > 3:
+        if not cmd_import_skins(sys.argv[2], sys.argv[3]):
             sys.exit(1)
     elif norm_cmd == "discard-backup" and len(sys.argv) > 3:
         if not cmd_discard_backup(sys.argv[2], sys.argv[3]):

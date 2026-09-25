@@ -217,6 +217,133 @@ def list_backed_up_cards(udid: str) -> list[str]:
     return sorted(found)
 
 
+# Card faces imported from a zip, a link or a single picture. Kept where they
+# survive a relaunch, unlike the temp files dropped images used to live in.
+SKIN_EXTENSIONS = {"png": ".png", "jpg": ".jpg", "heic": ".heic", "webp": ".webp"}
+MAX_SKIN_BYTES = 30 * 1024 * 1024
+MAX_PACK_BYTES = 400 * 1024 * 1024
+MAX_PACK_IMAGES = 400
+MAX_FOLDER_FILES = 5000
+
+
+def skin_image_kind(data: bytes) -> "str | None":
+    """What a file really is, from its first bytes rather than its name."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"mif1", b"msf1", b"heim", b"heis", b"hevc"):
+        return "heic"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _skin_name(original: str, kind: str, taken: set) -> str:
+    """A safe, unique file name inside the library.
+
+    Only the last path component is ever used, so an entry like ../../x.png
+    cannot land outside the library folder.
+    """
+    leaf = original.replace("\\", "/").split("/")[-1]
+    # Split by hand: pathlib has changed its mind about names like "..png"
+    # between Python versions, and the app runs whichever one the Mac has.
+    dot = leaf.rfind(".")
+    stem = leaf[:dot] if dot > 0 else leaf
+    stem = re.sub(r"[^\w .+=-]+", "_", stem)
+    stem = re.sub(r"\s+", " ", stem).strip(" ._")[:80].rstrip(" .") or "skin"
+    ext = SKIN_EXTENSIONS[kind]
+    name, n = f"{stem}{ext}", 2
+    while name.lower() in taken:
+        name, n = f"{stem}-{n}{ext}", n + 1
+    taken.add(name.lower())
+    return name
+
+
+def import_skins(source: Path, library: Path) -> dict:
+    """Copies the pictures out of a zip, a folder, or a single picture, into the library.
+
+    Anything that is not really an image is left behind, however it is named.
+    Sizes are checked both against what each file claims and against what is
+    actually read, so a zip that lies about its contents cannot fill the disk.
+    """
+    import zipfile
+    library.mkdir(parents=True, exist_ok=True)
+    taken = {p.name.lower() for p in library.iterdir()}
+    imported: list[str] = []
+    skipped = 0
+    total = 0
+
+    def keep(original: str, data: bytes) -> bool:
+        kind = skin_image_kind(data)
+        if kind is None or len(data) > MAX_SKIN_BYTES:
+            return False
+        name = _skin_name(original, kind, taken)
+        (library / name).write_bytes(data)
+        imported.append(name)
+        return True
+
+    def consider(leaf: str, size, read) -> None:
+        nonlocal skipped, total
+        if len(imported) >= MAX_PACK_IMAGES or total >= MAX_PACK_BYTES or size is None or size > MAX_SKIN_BYTES:
+            skipped += 1
+            return
+        # One damaged, locked or oddly compressed file costs only itself; the
+        # rest of the pack still comes in.
+        try:
+            data = read()
+        except Exception:
+            skipped += 1
+            return
+        total += len(data)
+        if not keep(leaf, data):
+            skipped += 1
+
+    def size_of(path: Path):
+        try:
+            return path.stat().st_size
+        except OSError:
+            return None
+
+    def read_path(path: Path) -> bytes:
+        with path.open("rb") as f:
+            return f.read(MAX_SKIN_BYTES + 1)
+
+    if source.is_dir():
+        # A pack unzipped in Finder and dropped in as a folder. Walking stops
+        # after a bounded number of files, in case it was the wrong folder.
+        seen = 0
+        for root, dirs, files in os.walk(source):
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__MACOSX")
+            for name in sorted(files):
+                if name.startswith("."):
+                    continue
+                seen += 1
+                if seen > MAX_FOLDER_FILES:
+                    return {"imported": imported, "skipped": skipped}
+                path = Path(root) / name
+                if path.is_symlink():
+                    skipped += 1
+                    continue
+                consider(name, size_of(path), lambda: read_path(path))
+    elif zipfile.is_zipfile(source):
+        with zipfile.ZipFile(source) as z:
+            for info in z.infolist():
+                leaf = info.filename.replace("\\", "/").split("/")[-1]
+                # Finder's __MACOSX copies are all ._ files, so the dot rule covers them.
+                if info.is_dir() or not leaf or leaf.startswith("."):
+                    continue
+
+                def read_entry(info=info) -> bytes:
+                    with z.open(info) as f:
+                        return f.read(MAX_SKIN_BYTES + 1)
+
+                consider(leaf, info.file_size, read_entry)
+    else:
+        consider(source.name, size_of(source), lambda: read_path(source))
+    return {"imported": imported, "skipped": skipped}
+
+
 def find_device_helper() -> str | None:
     """Finds the bundled device helper, the app's only device-communication tool."""
     root = Path(__file__).resolve().parent
@@ -260,7 +387,9 @@ def _normalize_device(device: dict) -> dict:
         "name": device.get("name") or "iPhone",
         "version": device.get("version") or "Unknown",
         "product": device["product"],
-        "language": device.get("language") or "en",
+        # Unknown stays unknown. Guessing English narrowed the keypad flash to
+        # English only, so a phone in any other language did not change.
+        "language": device.get("language") or None,
         "locale": device.get("locale") or "",
         "bold_text": device.get("bold_text"),
         "connection": device.get("connection") or "unknown",

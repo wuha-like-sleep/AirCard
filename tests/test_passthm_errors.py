@@ -55,3 +55,39 @@ class PasscodeFlashFailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PasscodeInspectFailureTests(unittest.TestCase):
+    """Reading a theme that fails says why, in a code the app turns into words."""
+
+    def _code(self, path):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            aircard_backend.cmd_inspect_passthm(str(path))
+        out = json.loads(buf.getvalue().strip().splitlines()[-1])
+        self.assertFalse(out["ok"])
+        return out["code"]
+
+    def test_each_cause_has_its_own_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            picture = root / "key.png"
+            picture.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+            empty = root / "empty.passthm"
+            with zipfile.ZipFile(empty, "w") as z:
+                z.writestr("readme.txt", "hello")
+            self.assertEqual(self._code(root / "gone.passthm"), "passthm.missing")
+            self.assertEqual(self._code(picture), "passthm.not_a_theme")
+            self.assertEqual(self._code(empty), "passthm.no_images")
+
+    def test_the_app_has_words_for_every_specific_code(self):
+        """A code the app does not know falls back to the generic line."""
+        import re
+        src = (Path(aircard_backend.__file__).parent / "AirCardApp.swift").read_text(encoding="utf-8")
+        start = src.index("static func passcodeFailureMessage(code: String)")
+        handled = set(re.findall(r'case "(passthm\.[a-z_]+)"', src[start:start + 3000]))
+        backend = Path(aircard_backend.__file__).read_text(encoding="utf-8")
+        body = backend[backend.index("def cmd_inspect_passthm"):backend.index("def cmd_flash_passthm")]
+        emitted = set(re.findall(r'"code": "(passthm\.[a-z_]+)"', body)) - {"passthm.unreadable"}
+        self.assertTrue(emitted)
+        self.assertEqual(emitted - handled, set())

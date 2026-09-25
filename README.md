@@ -19,7 +19,7 @@
 - ⚡ **Per-Card & Bulk Customization:** Set unique artwork for each card or apply one design across all cards with a single click.
 - 📱 **Zero-Hassle Card Detection:** Tap any card in your iPhone's Wallet app to detect its hash in real-time.
 - 🚀 **100% Standalone (Universal):** Native support for both **Apple Silicon** and **Intel (x86)** Macs. All required device-communication utilities and image engines are pre-bundled inside the app.
-- 📦 **Zero Prerequisites:** No Homebrew, Python packages, or terminal setup required for macOS users.
+- 📦 **Nothing to install by hand:** No Homebrew or Python packages. AirCard uses the Python 3 from Apple's Command Line Tools, and if they are missing it tells you the one command that installs them.
 
 ---
 
@@ -31,26 +31,27 @@
 3. Fully compatible with both **Apple Silicon** and **Intel (x86)** Macs.
 
 > [!NOTE]
-> **First Launch on macOS (Gatekeeper):**
-> If macOS displays an unidentified developer prompt on first launch:
-> - **Method 1 (UI):** Right-click (or Control-click) `AirCard.app` in Applications ➔ click **Open** ➔ click **Open**.
-> - **Method 2 (Terminal):**
+> **First launch.** A build signed with a Developer ID and notarised by Apple opens normally. A build that is not (the default when you build it yourself) is stopped by macOS the first time:
+> - **macOS 15 or later:** open AirCard once and click **Done**. In **System Settings > Privacy & Security**, scroll to **Security** and click **Open Anyway** next to the AirCard message and confirm with your password.
+> - **macOS 14:** Control-click `AirCard.app` in Applications, choose **Open**, then click **Open**.
+> - **"AirCard is damaged":** run this in Terminal, then open it again:
 >   ```sh
->   sudo xattr -cr /Applications/AirCard.app
+>   xattr -dr com.apple.quarantine /Applications/AirCard.app
 >   ```
 
 ---
 
 ## How to Customize Apple Wallet Cards
-1. Connect your iPhone to your Mac via USB cable and ensure it is unlocked and trusted.
-2. In AirCard, stay on the **Wallet Cards** tab and click **Scan Cards**.
+1. Connect your iPhone with a cable that carries data. Unlock it and tap **Trust**. If your Mac asks whether to allow the accessory, click **Allow**.
+2. In AirCard, stay on the **Apple Wallet** tab and click **Scan Cards**.
 3. On your iPhone:
    - **Double-click the Side (Power) button** to open Apple Pay.
    - Authenticate with **Face ID**.
    - **Tap your card** (or tap it once more) to trigger instant detection!
-4. Click on any card mockup or drag & drop an image directly onto the card.
-5. Click **Flash Skins**.
-6. Force-close the **Wallet** app on your iPhone from the App Switcher (or reboot) to see your new custom card design!
+4. Click **Read Original Designs** to keep a copy of each card as it is now, so it can be put back later.
+5. Click a card, or drop a picture onto it, and frame it in the designer. To reuse pictures, open **Skin Library** and import a pack from a zip, a folder or a link.
+6. Click **Flash Skins**.
+7. Force-close the **Wallet** app on your iPhone from the App Switcher (or restart the iPhone) to see your new card design.
 
 ### If scanning finds no cards
 

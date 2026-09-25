@@ -64,6 +64,34 @@ class LocalizationTests(unittest.TestCase):
         dead = sorted(set(self.base) - used)
         self.assertEqual(dead, [], f"in en.lproj but no longer used by the app: {dead}")
 
+    def test_messages_people_read_go_through_the_strings_file(self):
+        """A bare English literal assigned here reaches every language as English.
+        One slipped into the flash path; the key checks cannot see it, because
+        it never had a key."""
+        src = (REPO / "AirCardApp.swift").read_text(encoding="utf-8")
+        bare = re.findall(r'^.*\b(?:errorMessage|statusText)\s*=\s*"[^"]*".*$', src, re.M)
+        bare += re.findall(r'^.*SkinLibraryNote\(text:\s*"[^"]*".*$', src, re.M)
+        self.assertEqual([l.strip() for l in bare], [])
+
+    # Sentences that tell people to click a button, and the button they name.
+    # If the two drift apart in a language, the instruction points at a
+    # button that is not on screen.
+    NAMES_A_BUTTON = {
+        "status.iphone_needs_trust_check": "ui.check_again",
+        "onboard.connect_trust_check": "ui.check_again",
+    }
+
+    def test_instructions_name_the_button_as_it_is_labelled(self):
+        for path in strings_files():
+            lang = path.parent.name
+            entries = parse(path)
+            for sentence, button in self.NAMES_A_BUTTON.items():
+                if sentence not in entries or button not in entries:
+                    continue  # reported by the key-parity test
+                label = entries[button].rstrip(".…").strip()
+                self.assertIn(label, entries[sentence],
+                              f"{lang} / {sentence} does not name the button as {button} labels it ({label!r})")
+
     def test_base_is_not_empty(self):
         self.assertGreater(len(self.base), 50, "English source looks truncated")
 

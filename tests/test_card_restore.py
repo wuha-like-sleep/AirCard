@@ -173,6 +173,29 @@ class BackupCommandTests(_TempBackups):
         self.assertEqual(events[-1]["code"], "backup.incomplete")
         self.assertFalse(aircard.has_card_backup(UDID, CARD))
 
+    def test_a_full_disk_is_not_blamed_on_the_phone(self):
+        """Every file was read; only saving it failed. Retrying with the phone
+        unlocked, as a read failure tells people to, can never fix that."""
+        with patch.object(aircard_backend, "read_file", self._reader()), \
+                patch.object(Path, "write_bytes", Mock(side_effect=OSError("No space left on device"))):
+            ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)
+        self.assertFalse(ok)
+        self.assertEqual(events[-1]["code"], "backup.write_failed")
+        self.assertFalse(aircard.has_card_backup(UDID, CARD))
+
+    def test_the_app_has_words_for_every_backup_code(self):
+        import re
+        src = (Path(aircard_backend.__file__).parent / "AirCardApp.swift").read_text(encoding="utf-8")
+        start = src.index("static func originalArtworkMessage(code: String)")
+        handled = set(re.findall(r'case "([a-z_.]+)"', src[start:start + 3000]))
+        backend = Path(aircard_backend.__file__).read_text(encoding="utf-8")
+        body = backend[backend.index("def cmd_backup"):backend.index("def cmd_backups")]
+        emitted = {c for c in re.findall(r'"code": "(backup\.[a-z_]+)"', body)}
+        emitted |= set(re.findall(r'"(backup\.[a-z_]+)" if', body)) | set(re.findall(r'else "(backup\.[a-z_]+)"', body))
+        errors = emitted - {"backup.exists", "backup.done", "backup.discarded"}
+        self.assertIn("backup.write_failed", errors)
+        self.assertEqual(errors - handled, set())
+
     def test_nothing_readable_is_a_plain_failure(self):
         with patch.object(aircard_backend, "read_file", Mock(return_value=None)):
             ok, events = self._events(aircard_backend.cmd_backup, UDID, CARD)

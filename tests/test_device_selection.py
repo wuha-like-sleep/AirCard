@@ -90,6 +90,12 @@ class DeviceSelectionTests(unittest.TestCase):
             self.assertIsNone(aircard.get_connected_device())
             self.assertEqual(aircard.list_connected_devices(), [])
 
+    def test_an_unknown_language_is_not_guessed(self):
+        """Guessing "en" narrowed the keypad flash to English on a phone in any other language."""
+        with self._with_devices([_raw("u", connection="usb")]):
+            dev = aircard.get_connected_device()
+        self.assertIsNone(dev["language"])
+
     def test_normalized_fields_have_defaults(self):
         with self._with_devices([_raw("u", connection="usb")]):
             dev = aircard.get_connected_device()

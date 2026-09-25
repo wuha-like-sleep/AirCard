@@ -248,5 +248,249 @@ class CardNumberPasteTests(unittest.TestCase):
         self.assertEqual(out.strip(), "ok")
 
 
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "needs swiftc on macOS")
+class PasscodeTargetTests(unittest.TestCase):
+    """Each phone's keypad targets come from that phone, never the last one."""
+
+    def test_targets_come_from_the_phone_alone(self):
+        lang = lift(r"(enum PasscodeLanguageTarget: String, CaseIterable, Identifiable \{.*?\n\})\n")
+        bold = lift(r"(enum PasscodeBoldTarget: String, CaseIterable, Identifiable \{.*?\n\})\n")
+        fn = lift(r"(    nonisolated static func passcodeTargets\(.*?\n    \}\n)").replace("nonisolated ", "")
+        lifted = ("import Foundation\n\nfunc L(_ key: String, _ fallback: String) -> String { fallback }\n\n"
+                  + lang + "\n\n" + bold + "\n\nenum AppViewModel {\n" + fn + "}\n")
+        driver = textwrap.dedent(r"""
+            import Foundation
+            let cases: [(String?, Bool?, String)] = [
+                ("ru-RU", true, "ru bold"),
+                ("zh-Hans-CN", false, "zh regular"),
+                ("pt_BR", nil, "pt both"),
+                ("EN", nil, "en both"),
+                ("nl", nil, "all both"),
+                (nil, nil, "all both"),
+                ("", true, "all bold"),
+                ("other", nil, "all both"),
+                ("all", nil, "all both"),
+            ]
+            var failures: [String] = []
+            for (language, boldText, want) in cases {
+                let t = AppViewModel.passcodeTargets(language: language, boldText: boldText)
+                let got = "\(t.language.code) \(t.bold.code)"
+                if got != want { failures.append("\(language ?? "nil"), \(String(describing: boldText)): got \(got), want \(want)") }
+            }
+            if failures.isEmpty { print("ok") } else { print(failures.joined(separator: "\n")); exit(1) }
+        """)
+        out = run_swift({"lifted.swift": lifted, "main.swift": driver})
+        self.assertEqual(out.strip(), "ok")
+
+
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "needs swiftc on macOS")
+class SkinLibraryTests(unittest.TestCase):
+    """Links people paste, the library's order, and the importer's output."""
+
+    def _statics(self) -> str:
+        parts = [
+            lift(r"(    nonisolated static func skinDownloadURL\(.*?\n    \}\n)"),
+            lift(r"(    nonisolated static func orderSkinNames\(.*?\n    \}\n)"),
+            lift(r"(    nonisolated static func parseSkinImport\(.*?\n    \}\n)"),
+        ]
+        result = lift(r"(struct SkinImportResult \{.*?\n\})\n")
+        body = "\n".join(parts).replace("nonisolated ", "")
+        return "import Foundation\n\n" + result + "\n\nenum AppViewModel {\n" + body + "}\n"
+
+    def test_links_people_paste(self):
+        driver = textwrap.dedent(r"""
+            import Foundation
+            let cases: [(String, String?)] = [
+                ("example.com/pack.zip", "https://example.com/pack.zip"),
+                ("  http://example.com/a.png \n", "https://example.com/a.png"),
+                ("https://github.com/u/r/blob/main/pack.zip", "https://github.com/u/r/blob/main/pack.zip?raw=true"),
+                ("https://github.com/u/r/blob/main/pack.zip?raw=false", "https://github.com/u/r/blob/main/pack.zip?raw=true"),
+                ("https://github.com/u/r/releases/download/v1/pack.zip", "https://github.com/u/r/releases/download/v1/pack.zip"),
+                ("https://www.dropbox.com/s/abc/pack.zip?dl=0", "https://www.dropbox.com/s/abc/pack.zip?dl=1"),
+                ("https://dropbox.com.example.net/x.zip?dl=0", "https://dropbox.com.example.net/x.zip?dl=0"),
+                ("https://example.com/卡面 包.zip", "https://example.com/%E5%8D%A1%E9%9D%A2%20%E5%8C%85.zip"),
+                ("file:///etc/passwd", nil),
+                ("ftp://example.com/pack.zip", nil),
+                ("javascript:alert(1)", nil),
+                ("not a link", nil),
+                ("localhost", nil),
+                ("", nil),
+                ("https://a.com/x.zip\nhttps://b.com/y.zip", nil),
+            ]
+            var failures: [String] = []
+            for (text, want) in cases {
+                let got = AppViewModel.skinDownloadURL(text)?.absoluteString
+                if got != want { failures.append("\(text.debugDescription): got \(got ?? "nil"), want \(want ?? "nil")") }
+            }
+            let order = AppViewModel.orderSkinNames(
+                ["b.png", "a10.png", "a2.png", "new2.png", "new1.png"],
+                recent: ["new2.png", "new1.png", "gone.png", "new2.png"])
+            if order != ["new2.png", "new1.png", "a2.png", "a10.png", "b.png"] { failures.append("order: \(order)") }
+            if failures.isEmpty { print("ok") } else { print(failures.joined(separator: "\n")); exit(1) }
+        """)
+        out = run_swift({"lifted.swift": self._statics(), "main.swift": driver})
+        self.assertEqual(out.strip(), "ok")
+
+    def test_the_app_reads_what_the_importer_prints(self):
+        """Run the real command, feed its output to the app's parser."""
+        import io
+        import zipfile
+        from contextlib import redirect_stdout
+        sys.path.insert(0, str(REPO))
+        import aircard_backend
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        outputs = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pack = root / "pack.zip"
+            with zipfile.ZipFile(pack, "w") as z:
+                z.writestr("Blue.png", png)
+                z.writestr("notes.txt", b"x")
+            empty = root / "empty.zip"
+            with zipfile.ZipFile(empty, "w") as z:
+                z.writestr("notes.txt", b"x")
+            for name, source in [("added", pack), ("none", empty), ("missing", root / "gone.zip")]:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    aircard_backend.cmd_import_skins(str(source), str(root / "lib"))
+                outputs[name] = buf.getvalue()
+        literal = lambda text: "\"\"\"\n" + text.replace("\\", "\\\\") + "\"\"\""
+        driver = textwrap.dedent("""
+            import Foundation
+            func show(_ r: SkinImportResult) -> String { "\\(r.code)|\\(r.imported.joined(separator: ","))|\\(r.skipped)" }
+            print(show(AppViewModel.parseSkinImport(Data(ADDED.utf8))))
+            print(show(AppViewModel.parseSkinImport(Data(NONE.utf8))))
+            print(show(AppViewModel.parseSkinImport(Data(MISSING.utf8))))
+            print(show(AppViewModel.parseSkinImport(nil)))
+            print(show(AppViewModel.parseSkinImport(Data("Traceback (most recent call last):".utf8))))
+            print(show(AppViewModel.parseSkinImport(Data((NONE + "\\n" + ADDED).utf8))))
+        """)
+        driver = (driver.replace("ADDED", literal(outputs["added"]))
+                        .replace("NONE", literal(outputs["none"]))
+                        .replace("MISSING", literal(outputs["missing"])))
+        out = run_swift({"lifted.swift": self._statics(), "main.swift": driver}).strip().splitlines()
+        self.assertEqual(out, [
+            "skins.imported|Blue.png|1",
+            "skins.none_found||1",
+            "skins.not_found||0",
+            "skins.unreadable||0",
+            "skins.unreadable||0",
+            "skins.imported|Blue.png|1",
+        ])
+
+    def test_the_library_lists_every_kind_the_importer_writes(self):
+        """A kind written but not listed would import 'successfully' and never show."""
+        sys.path.insert(0, str(REPO))
+        import aircard
+        listed = lift(r'nonisolated static let skinFileExtensions: Set<String> = \[([^\]]*)\]')
+        listed = set(re.findall(r'"([a-z0-9]+)"', listed))
+        written = {ext.lstrip(".") for ext in aircard.SKIN_EXTENSIONS.values()}
+        self.assertEqual(written - listed, set())
+
+    def test_thumbnails_are_small_and_bad_files_give_none(self):
+        thumb = lift(r"(    nonisolated static func skinThumbnail\(.*?\n    \}\n)").replace("nonisolated ", "")
+        driver = textwrap.dedent("""
+            import AppKit
+            let dir = CommandLine.arguments[1]
+            let big = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 3000, pixelsHigh: 1500, bitsPerSample: 8,
+                                       samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                       bytesPerRow: 0, bitsPerPixel: 0)!
+            try! big.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: dir + "/big.png"))
+            try! Data("not a picture".utf8).write(to: URL(fileURLWithPath: dir + "/bad.png"))
+            if let t = AppViewModel.skinThumbnail(URL(fileURLWithPath: dir + "/big.png")) { print("\\(t.width)x\\(t.height)") } else { print("nil") }
+            print(AppViewModel.skinThumbnail(URL(fileURLWithPath: dir + "/bad.png")) == nil ? "nil" : "image")
+        """)
+        out = run_swift({"lifted.swift": "import Foundation\nimport ImageIO\n\nenum AppViewModel {\n" + thumb + "}\n", "main.swift": driver})
+        self.assertEqual(out.strip().splitlines(), ["440x220", "nil"])
+
+    def test_downloads_against_a_real_server(self):
+        """404, a web page, a size over the cap, and a good file, over real HTTP."""
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path == "/pack.zip":
+                    body = b"PK\x05\x06" + b"\x00" * 18
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Disposition", 'attachment; filename="My Pack.zip"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path == "/page":
+                    body = b"<!doctype html><title>Share</title>"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path == "/huge.zip":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Length", str(500 * 1024 * 1024))
+                    self.end_headers()
+                    try:
+                        self.wfile.write(b"PK" + b"\x00" * 1024)
+                    except OSError:
+                        pass
+                else:
+                    self.send_error(404)
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        downloader = lift(r"(final class SkinDownloader: NSObject, URLSessionDataDelegate \{.*?\n\})\n")
+        driver = textwrap.dedent("""
+            import Foundation
+            let folder = URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("dl")
+            try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            func fetch(_ path: String) -> String {
+                var outcome: String?
+                let d = SkinDownloader(url: URL(string: "BASE" + path)!, folder: folder,
+                                       onProgress: { _ in },
+                                       onFinish: { result in
+                    switch result {
+                    case .success(let file):
+                        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? -1
+                        outcome = "file \\(file.lastPathComponent) \\(size)"
+                    case .failure(let f):
+                        outcome = "\\(f)"
+                    }
+                })
+                d.start()
+                let deadline = Date().addingTimeInterval(30)
+                while outcome == nil && Date() < deadline {
+                    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+                }
+                return outcome ?? "timeout"
+            }
+            print(fetch("/pack.zip"))
+            print(fetch("/missing.zip"))
+            print(fetch("/page"))
+            print(fetch("/huge.zip"))
+            let names: [(String?, String)] = [(nil, "https://x.com/"), ("../../x.zip", ""), ("a:b.png", ""), (nil, "https://x.com/p/pack.zip")]
+            for (suggested, url) in names {
+                print(SkinDownloader.fileName(suggested: suggested, url: URL(string: url.isEmpty ? "https://x.com/q" : url)!))
+            }
+        """).replace("BASE", base)
+        out = run_swift({"downloader.swift": "import Foundation\n\n" + downloader, "main.swift": driver}).strip().splitlines()
+        self.assertEqual(out, [
+            "file My Pack.zip 22",
+            "status(404)",
+            "webPage",
+            "tooLarge",
+            "download",
+            "download",
+            "a_b.png",
+            "pack.zip",
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()

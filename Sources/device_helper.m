@@ -215,7 +215,8 @@ static void EnumerateCallback(AMDeviceNotificationCallbackInfo *info,
             }
             id language = CFBridgingRelease(AMDeviceCopyValue(
                 info->device, CFSTR("com.apple.international"), CFSTR("Language")));
-            entry[@"language"] = [language isKindOfClass:NSString.class] ? language : @"en";
+            // Left out when unreadable; the app then writes every language.
+            if ([language isKindOfClass:NSString.class]) entry[@"language"] = language;
 
             id locale = CFBridgingRelease(AMDeviceCopyValue(
                 info->device, CFSTR("com.apple.international"), CFSTR("Locale")));

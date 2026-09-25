@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import ImageIO
 
 // UI text lives in Resources/<lang>.lproj/Localizable.strings. The English wording
 // stays at the call site as the fallback, so a missing key still renders normally.
@@ -45,6 +46,201 @@ struct DeviceListResponse: Codable {
     // that does not send it still decodes.
     var untrusted: Int?
     var error: String?
+}
+
+// One picture in the skin library. Only the location is held; the preview is
+// made when its cell first comes into view (see SkinThumbnail).
+struct SkinLibraryItem: Identifiable {
+    let url: URL
+    var id: String { url.path }
+    var name: String { url.deletingPathExtension().lastPathComponent }
+}
+
+// Previews are made as cells scroll into view and kept in a bounded cache, so a
+// library of hundreds of pictures opens at once instead of after every preview
+// has been made, and does not hold hundreds of decoded images in memory.
+struct SkinThumbnail: View {
+    let url: URL
+    @State private var image: NSImage?
+    @State private var failed = false
+
+    private static let cache: NSCache<NSURL, NSImage> = {
+        let cache = NSCache<NSURL, NSImage>()
+        cache.countLimit = 240
+        return cache
+    }()
+
+    var body: some View {
+        ZStack {
+            Color(NSColor.controlBackgroundColor)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if failed {
+                Image(systemName: "photo.badge.exclamationmark")
+                    .foregroundColor(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .task(id: url) {
+            if let cached = Self.cache.object(forKey: url as NSURL) {
+                image = cached
+                return
+            }
+            let source = url
+            let made = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                AppViewModel.skinThumbnail(source)
+            }.value
+            guard !Task.isCancelled else { return }
+            if let made {
+                let thumbnail = NSImage(cgImage: made, size: .zero)
+                Self.cache.setObject(thumbnail, forKey: source as NSURL)
+                image = thumbnail
+            } else {
+                failed = true
+            }
+        }
+    }
+}
+
+// A line under the library's import controls: progress, what was added, or
+// what went wrong. Shown in the sheet itself, since an alert on the window
+// behind it may not appear while the sheet is up.
+struct SkinLibraryNote {
+    let text: String
+    var isError = false
+}
+
+// What the backend said about one import.
+struct SkinImportResult {
+    var imported: [String] = []
+    var skipped = 0
+    var code = ""
+}
+
+// Fetches a pack or picture from a link into a folder of its own. It stops at
+// the size the importer would refuse anyway, so a wrong link cannot fill the
+// disk, and a link that turns out to be a web page is caught before anything
+// tries to unpack it.
+final class SkinDownloader: NSObject, URLSessionDataDelegate {
+    enum Failure: Error, Equatable {
+        case status(Int)
+        case webPage
+        case tooLarge
+        case network(String)
+        case cancelled
+    }
+
+    // Matches MAX_PACK_BYTES in aircard.py.
+    static let maxBytes: Int64 = 400 * 1024 * 1024
+
+    private let url: URL
+    private let folder: URL
+    private let onProgress: @MainActor (Int64) -> Void
+    private let onFinish: @MainActor (Result<URL, Failure>) -> Void
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var file: URL?
+    private var handle: FileHandle?
+    private var received: Int64 = 0
+    private var failure: Failure?
+
+    init(url: URL, folder: URL,
+         onProgress: @escaping @MainActor (Int64) -> Void,
+         onFinish: @escaping @MainActor (Result<URL, Failure>) -> Void) {
+        self.url = url
+        self.folder = folder
+        self.onProgress = onProgress
+        self.onFinish = onFinish
+        super.init()
+    }
+
+    func start() {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 15 * 60
+        // Callbacks arrive on the main queue, which is what lets them call
+        // straight into the view model below.
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        self.session = session
+        task = session.dataTask(with: url)
+        task?.resume()
+    }
+
+    func cancel() {
+        failure = .cancelled
+        task?.cancel()
+    }
+
+    // The name the server gives the file, made safe to use as one, so a single
+    // picture keeps its own name in the library.
+    static func fileName(suggested: String?, url: URL) -> String {
+        let raw = suggested ?? url.lastPathComponent
+        let cleaned = raw.map { "/:\\".contains($0) || $0.isNewline ? "_" : $0 }
+        let name = String(cleaned).trimmingCharacters(in: .whitespaces)
+        let meaningless = name.allSatisfy { "_. ".contains($0) }
+        return meaningless || name.hasPrefix(".") ? "download" : name
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            failure = .status(http.statusCode)
+        } else if response.mimeType?.lowercased() == "text/html" {
+            failure = .webPage
+        } else if response.expectedContentLength > Self.maxBytes {
+            failure = .tooLarge
+        } else {
+            let file = folder.appendingPathComponent(Self.fileName(suggested: response.suggestedFilename, url: url))
+            if FileManager.default.createFile(atPath: file.path, contents: nil),
+               let handle = try? FileHandle(forWritingTo: file) {
+                self.file = file
+                self.handle = handle
+            } else {
+                failure = .network(CocoaError(.fileWriteUnknown).localizedDescription)
+            }
+        }
+        completionHandler(failure == nil ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        received += Int64(data.count)
+        if received > Self.maxBytes {
+            failure = .tooLarge
+            dataTask.cancel()
+            return
+        }
+        do {
+            try handle?.write(contentsOf: data)
+        } catch {
+            failure = .network(error.localizedDescription)
+            dataTask.cancel()
+            return
+        }
+        let received = self.received
+        MainActor.assumeIsolated { onProgress(received) }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        try? handle?.close()
+        handle = nil
+        // The session keeps its delegate alive until it is invalidated.
+        session.finishTasksAndInvalidate()
+        self.session = nil
+        let result: Result<URL, Failure>
+        if let failure {
+            result = .failure(failure)
+        } else if let error {
+            result = .failure(.network(error.localizedDescription))
+        } else if let file {
+            result = .success(file)
+        } else {
+            result = .failure(.network(URLError(.zeroByteResource).localizedDescription))
+        }
+        MainActor.assumeIsolated { onFinish(result) }
+    }
 }
 
 struct CardItem: Identifiable, Hashable {
@@ -561,6 +757,8 @@ class AppViewModel: ObservableObject {
     @Published var targetTelephonyVersion: String = "TelephonyUI-10"
     @Published var passcodeLanguageTarget: PasscodeLanguageTarget = .all
     @Published var passcodeBoldTarget: PasscodeBoldTarget = .both
+    // The phone the passcode targets were last set from.
+    private var preferencesAppliedFor: String?
     
     // Theme Creator Properties
     @Published var passcodeTabMode: PasscodeTabMode = .applyTheme
@@ -589,6 +787,22 @@ class AppViewModel: ObservableObject {
     // A picture just picked or dropped, to start a fresh design from. Without
     // one, the designer reopens the card's existing design.
     @Published var designerSeed: NSImage?
+    // Pictures saved in the skin library, newest imports first.
+    @Published var skinLibrary: [SkinLibraryItem] = []
+    @Published var showSkinLibrary = false
+    // The card a picture chosen in the library goes to. Nil means every
+    // selected card.
+    @Published var skinLibraryCardID: String?
+    @Published var skinLibraryNote: SkinLibraryNote?
+    @Published var isImportingSkins = false
+    @Published var isDownloadingSkins = false
+    // Held until the library has closed, then handed to the designer: two
+    // sheets cannot be up at once.
+    private var skinChosenFromLibrary: NSImage?
+    private var skinDownload: SkinDownloader?
+    // Names from this session's imports, so they show first rather than
+    // scattered through a library sorted by name.
+    private var recentSkinImports: [String] = []
     // A phone is plugged in but has not trusted this Mac yet.
     @Published var awaitingTrust = false
     // Keeps looking for a phone while none is connected, so nobody has to
@@ -1028,6 +1242,256 @@ class AppViewModel: ObservableObject {
         log("Designed a card face for \(cardIds.count) card(s).")
     }
 
+    // MARK: - Skin Library
+
+    // Pictures imported from packs, folders, links or files live here, so a
+    // pack downloaded once can go on any card later.
+    nonisolated static var skinLibraryURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AirCard/Skins", isDirectory: true)
+    }
+
+    nonisolated static var skinLibraryHasPictures: Bool {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: skinLibraryURL.path)) ?? []
+        return names.contains { !$0.hasPrefix(".") && skinFileExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
+    }
+
+    // What was just imported comes first, in the pack's own order; the rest
+    // follows by name, the way Finder sorts it.
+    nonisolated static func orderSkinNames(_ names: [String], recent: [String]) -> [String] {
+        let present = Set(names)
+        var first: [String] = []
+        for name in recent where present.contains(name) && !first.contains(name) {
+            first.append(name)
+        }
+        let shown = Set(first)
+        let rest = names.filter { !shown.contains($0) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        return first + rest
+    }
+
+    // What the library lists: the kinds the importer writes, plus the common
+    // ones someone might drop into the folder from Finder themselves.
+    nonisolated static let skinFileExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "webp", "gif", "tif", "tiff", "bmp"]
+
+    // Big enough for the widest grid cell on a Retina screen, and no bigger.
+    nonisolated static func skinThumbnail(_ url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 440
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    // Accepts what people actually paste: a bare address, an http link, or
+    // the page link a sharing site gives out instead of the file itself.
+    nonisolated static func skinDownloadURL(_ text: String) -> URL? {
+        var raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, !raw.contains(where: \.isNewline) else { return nil }
+        if !raw.contains("://") { raw = "https://" + raw }
+        guard let url = URL(string: raw, encodingInvalidCharacters: true),
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = parts.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = parts.host?.lowercased(), host.contains("."), !host.hasPrefix("."), !host.hasSuffix(".")
+        else { return nil }
+        // The app only loads secure links, and nearly every host serves both.
+        parts.scheme = "https"
+        var query = parts.queryItems ?? []
+        if host == "github.com", parts.path.contains("/blob/") {
+            // A GitHub file page is HTML; the same address with raw=true is the file.
+            query.removeAll { $0.name == "raw" }
+            query.append(URLQueryItem(name: "raw", value: "true"))
+            parts.queryItems = query
+        } else if host == "dropbox.com" || host.hasSuffix(".dropbox.com") {
+            // A Dropbox share link shows a preview page unless dl=1.
+            query.removeAll { $0.name == "dl" || $0.name == "raw" }
+            query.append(URLQueryItem(name: "dl", value: "1"))
+            parts.queryItems = query
+        }
+        return parts.url
+    }
+
+    // The last JSON line the importer printed. Anything else, including no
+    // output at all, reads as a file that could not be opened.
+    nonisolated static func parseSkinImport(_ data: Data?) -> SkinImportResult {
+        let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        for line in text.split(separator: "\n").reversed() {
+            guard let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let code = json["code"] as? String else { continue }
+            return SkinImportResult(imported: json["imported"] as? [String] ?? [],
+                                    skipped: json["skipped"] as? Int ?? 0,
+                                    code: code)
+        }
+        return SkinImportResult(code: "skins.unreadable")
+    }
+
+    static func skinDownloadMessage(_ failure: SkinDownloader.Failure) -> String {
+        switch failure {
+        case .status:
+            return L("skins.link_failed", "Nothing could be downloaded from that link. Check that it opens in your browser.")
+        case .webPage:
+            return L("skins.link_is_page", "That link opens a web page, not a file. Open it in your browser, download the zip or picture, then drop it here.")
+        case .tooLarge:
+            return L("skins.link_too_large", "The download was stopped at 400 MB. A card pack is far smaller than that, so check the link points to the right file.")
+        case .network(let reason):
+            return String(format: L("skins.download_failed", "The download did not finish: %@"), reason)
+        case .cancelled:
+            return L("skins.download_cancelled", "Download cancelled.")
+        }
+    }
+
+    func openSkinLibrary(for cardId: String?) {
+        skinLibraryCardID = cardId
+        skinChosenFromLibrary = nil
+        if !isImportingSkins { skinLibraryNote = nil }
+        showSkinLibrary = true
+        loadSkinLibrary()
+    }
+
+    func loadSkinLibrary() {
+        let dir = Self.skinLibraryURL
+        let recent = recentSkinImports
+        Task.detached(priority: .userInitiated) {
+            let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+                .filter { !$0.hasPrefix(".") && AppViewModel.skinFileExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
+            let items = AppViewModel.orderSkinNames(names, recent: recent)
+                .map { SkinLibraryItem(url: dir.appendingPathComponent($0)) }
+            await MainActor.run { self.skinLibrary = items }
+        }
+    }
+
+    func chooseSkin(_ image: NSImage) {
+        skinChosenFromLibrary = image
+        showSkinLibrary = false
+    }
+
+    // Runs once the library sheet has gone, so the designer can take its place.
+    func skinLibraryClosed() {
+        guard let image = skinChosenFromLibrary else { return }
+        skinChosenFromLibrary = nil
+        if let id = skinLibraryCardID {
+            if cards.contains(where: { $0.id == id }) { openDesigner(for: id, image: image) }
+        } else if cards.contains(where: \.isSelected) {
+            openDesignerForAllSelected(image: image)
+        }
+    }
+
+    func revealSkinLibrary() {
+        let dir = Self.skinLibraryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([dir])
+    }
+
+    // To the Trash, not deleted, so a slip can be undone from Finder.
+    func removeSkin(_ item: SkinLibraryItem) {
+        do {
+            try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+            skinLibrary.removeAll { $0.id == item.id }
+        } catch {
+            skinLibraryNote = SkinLibraryNote(text: error.localizedDescription, isError: true)
+            loadSkinLibrary()
+        }
+    }
+
+    func importSkins(from sources: [URL], cleaningUp temporary: URL? = nil) {
+        guard !isImportingSkins, !sources.isEmpty else {
+            if let temporary { try? FileManager.default.removeItem(at: temporary) }
+            return
+        }
+        isImportingSkins = true
+        skinLibraryNote = SkinLibraryNote(text: L("skins.importing", "Adding to the library..."))
+        let scriptDir = self.scriptDir
+        let library = Self.skinLibraryURL.path
+        Task.detached {
+            var total = SkinImportResult()
+            var unreadable = 0
+            for source in sources {
+                let data = AppViewModel.runBackend(["aircard_backend.py", "--import-skins", source.path, library], scriptDir: scriptDir)
+                let result = AppViewModel.parseSkinImport(data)
+                total.imported += result.imported
+                total.skipped += result.skipped
+                if result.code == "skins.unreadable" || result.code == "skins.not_found" { unreadable += 1 }
+            }
+            if let temporary { try? FileManager.default.removeItem(at: temporary) }
+            let result = total, failed = unreadable
+            await MainActor.run {
+                self.isImportingSkins = false
+                self.finishSkinImport(result, unreadable: failed)
+            }
+        }
+    }
+
+    private func finishSkinImport(_ result: SkinImportResult, unreadable: Int) {
+        let added = result.imported.count
+        let left = result.skipped + unreadable
+        log("Skin library: added \(added), skipped \(result.skipped), unreadable \(unreadable).")
+        if added > 0 {
+            recentSkinImports = result.imported + recentSkinImports.filter { !result.imported.contains($0) }
+            skinLibraryNote = SkinLibraryNote(text: left == 0
+                ? String(format: L("skins.added", "Added %d to the library."), added)
+                : String(format: L("skins.added_some_skipped", "Added %1$d to the library. %2$d skipped: not a picture, or too big."), added, left))
+        } else if unreadable > 0 && result.skipped == 0 {
+            skinLibraryNote = SkinLibraryNote(text: L("skins.unreadable", "That file could not be opened. If it is a zip, double-click it in Finder to check it is not damaged."), isError: true)
+        } else {
+            skinLibraryNote = SkinLibraryNote(text: L("skins.none_found", "No card pictures were found. They need to be PNG, JPEG, HEIC or WebP files."), isError: true)
+        }
+        loadSkinLibrary()
+    }
+
+    func downloadSkins(from text: String) {
+        guard !isImportingSkins, !isDownloadingSkins else { return }
+        guard let url = Self.skinDownloadURL(text) else {
+            skinLibraryNote = SkinLibraryNote(text: L("skins.bad_link", "That does not look like a link. Paste the whole address, starting with https://"), isError: true)
+            return
+        }
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aircard_download_\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            skinLibraryNote = SkinLibraryNote(text: Self.skinDownloadMessage(.network(error.localizedDescription)), isError: true)
+            return
+        }
+        isDownloadingSkins = true
+        showDownloadProgress(0)
+        log("Downloading skins from \(url.host ?? "a link")...")
+        var shown: Int64 = 0
+        let download = SkinDownloader(url: url, folder: folder, onProgress: { [weak self] bytes in
+            // A fast link calls this thousands of times; redraw every 256 KB.
+            guard bytes - shown >= 256 * 1024 else { return }
+            shown = bytes
+            self?.showDownloadProgress(bytes)
+        }, onFinish: { [weak self] result in
+            guard let self else {
+                try? FileManager.default.removeItem(at: folder)
+                return
+            }
+            self.skinDownload = nil
+            self.isDownloadingSkins = false
+            switch result {
+            case .success(let file):
+                self.importSkins(from: [file], cleaningUp: folder)
+            case .failure(let failure):
+                try? FileManager.default.removeItem(at: folder)
+                if case .status(let code) = failure { self.log("  The link answered HTTP \(code).") }
+                self.skinLibraryNote = SkinLibraryNote(text: Self.skinDownloadMessage(failure), isError: failure != .cancelled)
+            }
+        })
+        skinDownload = download
+        download.start()
+    }
+
+    func cancelSkinDownload() {
+        skinDownload?.cancel()
+    }
+
+    private func showDownloadProgress(_ bytes: Int64) {
+        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        skinLibraryNote = SkinLibraryNote(text: String(format: L("skins.downloading", "Downloading... %@"), size))
+    }
+
     func clearCardImage(for cardId: String) {
         if let idx = cards.firstIndex(where: { $0.id == cardId }) {
             cards[idx].customImageURL = nil
@@ -1136,7 +1600,7 @@ class AppViewModel: ObservableObject {
                     } else if state == "untrusted" {
                         // Seen at all means the Mac already let the data through,
                         // so the Trust prompt is on the phone now.
-                        self.statusText = L("status.iphone_needs_trust", "Your iPhone is connected but has not trusted this Mac yet. Unlock it, tap Trust, then click refresh.")
+                        self.statusText = L("status.iphone_needs_trust_check", "Your iPhone is connected but has not trusted this Mac yet. Unlock it, tap Trust, then click Check Again.")
                         self.log("An iPhone is attached but has not trusted this Mac yet.")
                     } else if response?.error == "device_helper_missing" {
                         self.statusText = L("status.device_tools_are_missing_from", "Device tools are missing from this build.")
@@ -1197,7 +1661,11 @@ class AppViewModel: ObservableObject {
                     self.device = dev
                     self.statusText = String(format: L("status.connected_to", "Connected to %@"), dev.name ?? "iPhone")
                     self.log("Device \(isInitial ? "connected" : "selected"): \(dev.name ?? "iPhone") (\(dev.product ?? ""), iOS \(dev.version ?? ""))")
-                    self.applyDevicePreferences(from: dev)
+                    // Only for a phone not set up yet: a refresh of the same phone
+                    // must not undo a choice made by hand in the target settings.
+                    if dev.udid != self.preferencesAppliedFor {
+                        self.applyDevicePreferences(from: dev)
+                    }
                     self.loadBackups()
                 } else {
                     self.device = nil
@@ -1262,6 +1730,8 @@ class AppViewModel: ObservableObject {
             return L("error.backup_incomplete", "Only part of this card's artwork could be read, so nothing was saved. Try again with the iPhone unlocked.")
         case "backup.failed":
             return L("error.backup_failed", "The card's artwork could not be read, so nothing was saved. Try again with the iPhone unlocked.")
+        case "backup.write_failed":
+            return L("error.backup_write_failed", "The card's artwork was read, but this Mac could not save it. Free up some disk space and try again.")
         case "backup.already_changed":
             return L("error.backup_already_changed", "AirCard has already changed this card, so what is on it now is not the original. To get the original back, remove the card from Wallet and add it again.")
         case "restore.no_backup":
@@ -1416,6 +1886,22 @@ class AppViewModel: ObservableObject {
         }
     }
 
+    // Each phone starts from the targets that write everything, narrowed only by
+    // what that phone actually reported. Starting from the last phone's choice
+    // meant a second phone with a language not on the list, or no Bold Text
+    // setting, kept the first phone's: its keypad never changed, and the app
+    // still said the theme was applied.
+    nonisolated static func passcodeTargets(language: String?, boldText: Bool?)
+        -> (language: PasscodeLanguageTarget, bold: PasscodeBoldTarget) {
+        var lang = PasscodeLanguageTarget.all
+        if let code = language?.components(separatedBy: CharacterSet(charactersIn: "-_")).first?.lowercased(),
+           let match = PasscodeLanguageTarget.allCases.first(where: { $0 != .other && $0.code == code }) {
+            lang = match
+        }
+        let bold: PasscodeBoldTarget = boldText.map { $0 ? .boldOnly : .regularOnly } ?? .both
+        return (lang, bold)
+    }
+
     func applyDevicePreferences(from dev: DeviceInfo) {
         // 1. Auto-detect TelephonyUI version based on iOS major version
         if let verStr = dev.version, let major = Int(verStr.components(separatedBy: ".").first ?? "") {
@@ -1428,21 +1914,12 @@ class AppViewModel: ObservableObject {
             }
         }
         
-        // 2. Auto-detect language
-        if let langCode = dev.language?.components(separatedBy: "-").first?.lowercased() {
-            for target in PasscodeLanguageTarget.allCases {
-                if target.code == langCode {
-                    self.passcodeLanguageTarget = target
-                    break
-                }
-            }
-        }
-        
-        // 3. Auto-detect bold text
-        if let isBold = dev.bold_text {
-            self.passcodeBoldTarget = isBold ? .boldOnly : .regularOnly
-        }
-        
+        // 2 and 3. Language and bold text, from this phone alone.
+        let targets = AppViewModel.passcodeTargets(language: dev.language, boldText: dev.bold_text)
+        self.passcodeLanguageTarget = targets.language
+        self.passcodeBoldTarget = targets.bold
+        self.preferencesAppliedFor = dev.udid
+
         self.log("  ⚡ Auto-configured passcode target: \(self.targetTelephonyVersion), language: \(self.passcodeLanguageTarget.rawValue), font: \(self.passcodeBoldTarget.rawValue)")
     }
     
@@ -1679,7 +2156,7 @@ class AppViewModel: ObservableObject {
                     let name = imgURL.lastPathComponent
                     await MainActor.run {
                         self.log("Could not prepare artwork from \(name); skipping this card.")
-                        self.errorMessage = "AirCard could not read the image you picked for one of the cards. That card was left unchanged."
+                        self.errorMessage = L("error.prepare_image_failed", "AirCard could not read the picture for one of the cards, so that card was left unchanged. Pick its picture again and send it once more.")
                     }
                     continue
                 }
@@ -1904,9 +2381,16 @@ class AppViewModel: ObservableObject {
                     self.log("Loaded .passthm: \(name) [\(detectedVersion)] with \(fileCount) image assets")
                 }
             } else {
+                // The backend says why; without this the person saw one generic
+                // line whatever the cause, and could only try the same file again.
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let code = json?["code"] as? String ?? ""
+                let detail = json?["error"] as? String ?? "no output"
                 await MainActor.run {
                     self.isInspectingTheme = false
-                    self.errorMessage = L("error.failed_to_inspect_passthm_file", "Failed to inspect .passthm file")
+                    self.log("Could not read \(url.lastPathComponent): \(detail)")
+                    self.errorMessage = AppViewModel.passcodeFailureMessage(code: code)
+                        ?? L("error.failed_to_inspect_passthm_file", "Failed to inspect .passthm file")
                 }
             }
         }
@@ -1918,6 +2402,8 @@ class AppViewModel: ObservableObject {
             return L("error.passthm_missing", "The theme file is no longer where it was when you picked it. Choose it again.")
         case "passthm.no_images":
             return L("error.passthm_no_images", "This theme file has no keypad images in it, so there is nothing to send.")
+        case "passthm.not_a_theme":
+            return L("error.passthm_not_a_theme", "This file is not a keypad theme. A theme is a .passthm or .passtheme file, or a zip of keypad images.")
         case "passthm.write_failed":
             return L("error.passthm_write_failed", "Some keypad files did not reach the iPhone, so the keypad may look mixed. Keep the iPhone unlocked and connected, then send the theme again.")
         case "passthm.failed":
@@ -2206,6 +2692,7 @@ struct WalletCardView: View {
     let onDropImage: (NSImage) -> Void
     let onClearImage: () -> Void
     let onDesign: () -> Void
+    let onChooseFromLibrary: () -> Void
     let onBackup: () -> Void
     let onRestore: () -> Void
     let onDiscardBackup: () -> Void
@@ -2443,6 +2930,12 @@ struct WalletCardView: View {
                     Button(action: onDesign) {
                         Label(L("designer.menu", "Design Card Face..."),
                               systemImage: "paintbrush.pointed")
+                    }
+                    .disabled(busy)
+
+                    Button(action: onChooseFromLibrary) {
+                        Label(L("ui.choose_from_library", "Choose from Skin Library..."),
+                              systemImage: "photo.stack")
                     }
                     .disabled(busy)
 
@@ -2736,6 +3229,283 @@ struct CardFaceDesignerView: View {
 
 // MARK: - Main UI View
 
+// Saved card pictures. A pack, folder, picture or link is imported once, and
+// any picture in it can then go on any card. Choosing one opens the designer,
+// the same as picking a file does, so framing is never skipped.
+struct SkinLibraryView: View {
+    @ObservedObject var vm: AppViewModel
+    @State private var link = ""
+    @State private var isDropTargeted = false
+    @State private var hovered: String?
+
+    private var targetIndex: Int? {
+        guard let id = vm.skinLibraryCardID else { return nil }
+        return vm.cards.firstIndex { $0.id == id }
+    }
+
+    // Opened from a card, or with cards selected. Otherwise the library can
+    // still take imports, but there is nothing for a picture to go on.
+    private var canChoose: Bool {
+        targetIndex != nil || (vm.skinLibraryCardID == nil && vm.cards.contains(where: \.isSelected))
+    }
+
+    private var subtitle: String {
+        if let index = targetIndex {
+            return String(format: L("skins.for_card", "Click a picture to use it on Card #%d."), index + 1)
+        }
+        if canChoose {
+            return L("skins.for_selected", "Click a picture to use it on every selected card.")
+        }
+        return L("skins.for_none", "Pictures you add stay here for next time. To use one, select cards in the list first, then open the library.")
+    }
+
+    private var busy: Bool { vm.isImportingSkins || vm.isDownloadingSkins }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("skins.title", "Skin Library"))
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                        Text(subtitle)
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    Button(L("skins.show_in_finder", "Show in Finder")) { vm.revealSkinLibrary() }
+                        .buttonStyle(.link)
+                }
+
+                HStack(spacing: 8) {
+                    Button(action: pickFiles) {
+                        Label(L("skins.import_file", "Import File..."), systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(busy)
+                    .help(L("skins.import_file_help", "A zip of card pictures, a folder, or one or more pictures"))
+
+                    if canChoose {
+                        Button(action: pickOnce) {
+                            Label(L("skins.use_once", "Choose a Picture..."), systemImage: "photo")
+                        }
+                        .help(L("skins.use_once_help", "Use a picture this once, without adding it to the library"))
+                    }
+                    Spacer()
+                }
+
+                HStack(spacing: 8) {
+                    TextField(L("skins.link_placeholder", "Or paste a link to a zip or picture"), text: $link)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(download)
+                        .disabled(busy)
+                    if vm.isDownloadingSkins {
+                        Button(L("ui.cancel", "Cancel")) { vm.cancelSkinDownload() }
+                    } else {
+                        Button(L("skins.download", "Download"), action: download)
+                            .disabled(busy || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+
+                if let note = vm.skinLibraryNote {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if busy {
+                            ProgressView().controlSize(.small)
+                        } else if note.isError {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                        }
+                        Text(note.text)
+                            .font(.callout)
+                            .foregroundColor(note.isError ? .primary : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .padding(20)
+
+            Divider()
+
+            ZStack {
+                if vm.skinLibrary.isEmpty {
+                    emptyState
+                } else {
+                    grid
+                }
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                        )
+                        .overlay(
+                            Text(L("skins.drop_here", "Drop to add to the library"))
+                                .font(.headline)
+                                .foregroundColor(.accentColor)
+                        )
+                        .padding(12)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleDrop)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                // Escape rather than Return: Return in the link field downloads,
+                // and must not also close the sheet.
+                Button(L("ui.done", "Done")) { vm.showSkinLibrary = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        }
+        .frame(minWidth: 640, idealWidth: 760, minHeight: 500, idealHeight: 620)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "photo.stack")
+                .font(.system(size: 40))
+                .foregroundColor(.secondary)
+                .accessibilityHidden(true)
+            Text(L("skins.empty_title", "No pictures yet"))
+                .font(.headline)
+            Text(L("skins.empty_body", "Import a zip of card pictures, or paste a link to one. You can also drop files or folders here. Everything you add stays in the library, ready for any card."))
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 400)
+        }
+        .padding(30)
+    }
+
+    private var grid: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 210), spacing: 14)], spacing: 16) {
+                ForEach(vm.skinLibrary) { item in
+                    Button { choose(item) } label: {
+                        VStack(spacing: 6) {
+                            Color.clear
+                                .aspectRatio(1536.0 / 969.0, contentMode: .fit)
+                                .overlay(SkinThumbnail(url: item.url))
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(hovered == item.id && canChoose ? Color.accentColor : Color.secondary.opacity(0.25),
+                                                lineWidth: hovered == item.id && canChoose ? 2 : 1)
+                                )
+                            Text(item.name)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovered = $0 ? item.id : (hovered == item.id ? nil : hovered) }
+                    .help(item.name)
+                    .accessibilityLabel(item.name)
+                    .contextMenu {
+                        Button(L("skins.show_in_finder", "Show in Finder")) {
+                            NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                        }
+                        Button(L("skins.move_to_trash", "Move to Trash"), role: .destructive) {
+                            vm.removeSkin(item)
+                        }
+                    }
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    private func choose(_ item: SkinLibraryItem) {
+        guard canChoose else {
+            vm.skinLibraryNote = SkinLibraryNote(text: L("skins.select_cards_first", "Select one or more cards in the list first, then open the library again."))
+            return
+        }
+        guard let image = NSImage(contentsOf: item.url) else {
+            vm.skinLibraryNote = SkinLibraryNote(text: L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG."), isError: true)
+            return
+        }
+        vm.chooseSkin(image)
+    }
+
+    private func download() {
+        let text = link
+        guard !busy, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        vm.downloadSkins(from: text)
+        if vm.isDownloadingSkins { link = "" }
+    }
+
+    private func pickFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip, .image, .folder]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.message = L("skins.import_panel", "Choose a zip of card pictures, a folder, or pictures to add to the library.")
+        if panel.runModal() == .OK {
+            vm.importSkins(from: panel.urls)
+        }
+    }
+
+    private func pickOnce() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            if let image = NSImage(contentsOf: url) {
+                vm.chooseSkin(image)
+            } else {
+                vm.skinLibraryNote = SkinLibraryNote(text: L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG."), isError: true)
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls: [URL] = []
+        for provider in providers where provider.canLoadObject(ofClass: URL.self) {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url, url.isFileURL {
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            vm.importSkins(from: urls)
+        }
+        return true
+    }
+}
+
+// Title and icon when there is room, icon alone when there is not. The title
+// still names the button for VoiceOver either way.
+struct AdaptiveLabelStyle: LabelStyle {
+    let iconOnly: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly {
+            Label(configuration).labelStyle(.iconOnly)
+        } else {
+            Label(configuration).labelStyle(.titleAndIcon)
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var vm: AppViewModel
     @State private var showCredits = false
@@ -2803,10 +3573,14 @@ struct ContentView: View {
                                     busy: vm.isFlashing,
                                     onPickImage: {
                                         let id = vm.cards[idx].id
-                                        // A card with a skin opens its design to adjust;
-                                        // an empty one asks for a picture first.
+                                        // A card with a skin opens its design to adjust.
+                                        // An empty one offers the library once there is
+                                        // something in it, and a file picker until then,
+                                        // so a first-time user is not shown an empty sheet.
                                         if vm.cards[idx].customImage != nil {
                                             vm.openDesigner(for: id, image: nil)
+                                        } else if AppViewModel.skinLibraryHasPictures {
+                                            vm.openSkinLibrary(for: id)
                                         } else {
                                             openCardImagePicker(for: id)
                                         }
@@ -2814,6 +3588,7 @@ struct ContentView: View {
                                     onDropImage: { image in vm.openDesigner(for: vm.cards[idx].id, image: image) },
                                     onClearImage: { vm.clearCardImage(for: vm.cards[idx].id) },
                                     onDesign: { vm.openDesigner(for: vm.cards[idx].id, image: nil) },
+                                    onChooseFromLibrary: { vm.openSkinLibrary(for: vm.cards[idx].id) },
                                     onBackup: { vm.backupCard(id: vm.cards[idx].id) },
                                     onRestore: { vm.restoreCard(id: vm.cards[idx].id) },
                                     onDiscardBackup: { vm.discardBackup(id: vm.cards[idx].id) },
@@ -2900,6 +3675,9 @@ struct ContentView: View {
         .sheet(isPresented: $vm.showAddCardSheet) {
             addCardSheet
         }
+        .sheet(isPresented: $vm.showSkinLibrary, onDismiss: { vm.skinLibraryClosed() }) {
+            SkinLibraryView(vm: vm)
+        }
         .onChange(of: vm.selectedTab) { _, newTab in
             if newTab == .passcodeThemes && vm.isScanningCards {
                 vm.stopCardScanning()
@@ -2912,7 +3690,21 @@ struct ContentView: View {
     
     // MARK: - Subviews
     
+    // Same idea as the toolbar: in a long language at the minimum width the
+    // device status was cut to "No iPhone..." while the Credits label kept its
+    // full width. Status matters more, so Credits and the tagline give way.
     private var headerView: some View {
+        ViewThatFits(in: .horizontal) {
+            headerContent(compact: false)
+            headerContent(compact: true)
+            // Last resort while waiting on Trust: the Check Again button is the
+            // way forward and must stay whole, and the status line below says
+            // in full what the capsule's words would have said.
+            headerContent(compact: true, dense: true)
+        }
+    }
+
+    private func headerContent(compact: Bool, dense: Bool = false) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "creditcard.circle.fill")
                 .font(.system(size: 30))
@@ -2931,9 +3723,12 @@ struct ContentView: View {
                         .foregroundColor(.accentColor)
                         .clipShape(Capsule())
                 }
-                Text(L("ui.wallet_cards_passcode_themes", "Wallet Cards & Passcode Themes"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if !compact {
+                    Text(L("ui.wallet_cards_passcode_themes", "Wallet Cards & Passcode Themes"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
             
             Spacer()
@@ -2966,13 +3761,14 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                             .lineLimit(1)
                     }
-                } else {
+                } else if !(dense && vm.awaitingTrust) {
                     Text(vm.awaitingTrust
                          ? L("ui.tap_trust", "Tap Trust on iPhone")
                          : L("ui.no_iphone_usb", "No iPhone (USB)"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                        .layoutPriority(1)
                 }
 
                 if vm.devices.count > 1 {
@@ -3003,13 +3799,26 @@ struct ContentView: View {
                     .help(String(format: L("ui.switch_device_help", "Switch device (%d connected)"), vm.devices.count))
                 }
 
-                Button(action: { vm.checkDevice() }) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11))
+                // While a phone waits on Trust nothing looks again on its own
+                // (see shouldLookForDevice), so the way forward gets words, not
+                // just an arrow.
+                if vm.awaitingTrust {
+                    Button(L("ui.check_again", "Check Again")) { vm.checkDevice() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .fixedSize()
+                        .disabled(vm.isCheckingDevice)
+                        .help(L("ui.tap_trust", "Tap Trust on iPhone"))
+                } else {
+                    Button(action: { vm.checkDevice() }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(vm.isCheckingDevice)
+                    .help(L("ui.refresh_device_connection", "Refresh device connection"))
+                    .accessibilityLabel(L("ui.refresh_device_connection", "Refresh device connection"))
                 }
-                .buttonStyle(.plain)
-                .disabled(vm.isCheckingDevice)
-                .help(L("ui.refresh_device_connection", "Refresh device connection"))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -3019,16 +3828,29 @@ struct ContentView: View {
             
             Button(action: { showCredits = true }) {
                 Label(L("ui.credits", "Credits"), systemImage: "heart.fill")
+                    .labelStyle(AdaptiveLabelStyle(iconOnly: compact))
                     .foregroundColor(.pink)
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
+            .help(compact ? L("ui.credits", "Credits") : "")
         }
         .controlSize(.regular)
         .frame(height: 54)
     }
     
+    // In the longer languages every label does not fit at the window's minimum
+    // width, and SwiftUI cut them mid-word ("Scan Ca...") and broke Select All
+    // over three lines. The secondary buttons drop to their icons instead,
+    // keeping their names as tooltips and for VoiceOver.
     private var toolbarView: some View {
+        ViewThatFits(in: .horizontal) {
+            toolbarContent(compact: false)
+            toolbarContent(compact: true)
+        }
+    }
+
+    private func toolbarContent(compact: Bool) -> some View {
         HStack(spacing: 12) {
             // Live Scanner Toggle
             Button(action: { vm.toggleCardScanning() }) {
@@ -3049,30 +3871,40 @@ struct ContentView: View {
             .tint(vm.isScanningCards ? .red : .blue)
             .controlSize(.regular)
             .disabled(vm.device?.connected != true)
+            // An empty tooltip shows nothing, so this only speaks up while greyed out.
+            .help(vm.device?.connected == true ? "" : L("ui.scan_needs_iphone", "Connect your iPhone first"))
             
             Button(action: { vm.readAllOriginals() }) {
                 Label(L("ui.read_originals", "Read Original Designs"), systemImage: "eye")
+                    .labelStyle(AdaptiveLabelStyle(iconOnly: compact))
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
             .disabled(vm.device?.connected != true || vm.isFlashing || vm.isScanningCards
                       || !vm.cards.contains { !vm.backedUpCards.contains($0.id) })
-            .help(L("ui.read_originals_help", "Show each card as it is now, and keep a copy so it can be put back later"))
+            .help(compact
+                  ? L("ui.read_originals", "Read Original Designs") + "\n" + L("ui.read_originals_help", "Show each card as it is now, and keep a copy so it can be put back later")
+                  : L("ui.read_originals_help", "Show each card as it is now, and keep a copy so it can be put back later"))
 
             Button(action: { vm.showAddCardSheet = true }) {
                 Label(L("ui.add_manually", "Add Manually"), systemImage: "plus")
+                    .labelStyle(AdaptiveLabelStyle(iconOnly: compact))
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
+            .help(compact ? L("ui.add_manually", "Add Manually") : "")
             
-            if !vm.cards.isEmpty {
-                Button(action: openBulkImagePicker) {
-                    Label(L("ui.set_skin_for_all", "Set Skin for All..."), systemImage: "photo.on.rectangle.angled")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .help(L("ui.assign_one_skin_to_all", "Assign one skin to all selected cards"))
+            // Also where one picture goes on every selected card, which had a
+            // button of its own before the library existed.
+            Button(action: { vm.openSkinLibrary(for: nil) }) {
+                Label(L("skins.title", "Skin Library"), systemImage: "photo.stack")
+                    .labelStyle(AdaptiveLabelStyle(iconOnly: compact))
             }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .help(compact
+                  ? L("skins.title", "Skin Library") + "\n" + L("ui.skin_library_help", "Import card pictures from a zip, a folder or a link, and use them on the selected cards")
+                  : L("ui.skin_library_help", "Import card pictures from a zip, a folder or a link, and use them on the selected cards"))
             
             Spacer()
             
@@ -3083,6 +3915,8 @@ struct ContentView: View {
                     }
                     .buttonStyle(.link)
                     .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
                     
                     Text("·").foregroundColor(.secondary)
                     
@@ -3091,6 +3925,8 @@ struct ContentView: View {
                     }
                     .buttonStyle(.link)
                     .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
                     
                     Text("·").foregroundColor(.secondary)
                     
@@ -3099,6 +3935,8 @@ struct ContentView: View {
                     }
                     .buttonStyle(.link)
                     .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
                     .foregroundColor(.red)
                 }
             }
@@ -3197,7 +4035,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 setupRow(0, Text(L("onboard.connect", "Connect your iPhone with a cable")),
                          detail: Text(vm.awaitingTrust
-                            ? L("onboard.connect_trust", "Unlock the iPhone and tap Trust.")
+                            ? L("onboard.connect_trust_check", "Unlock the iPhone and tap Trust, then click Check Again below.")
                             : L("onboard.connect_detail", "Use a cable that carries data. If your Mac asks whether to allow the accessory, click Allow.")))
                 setupRow(1, Text(LM("onboard.scan", "Click **Start Scanning** below.")))
                 setupRow(2, Text(LM("ui.on_your_iphone_double_click", "On your iPhone, **double-click the Side button** (Apple Pay), authenticate with **Face ID**, and **tap your card**.")))
@@ -3210,7 +4048,26 @@ struct ContentView: View {
             .cornerRadius(12)
 
             HStack(spacing: 12) {
-                if vm.device?.connected != true {
+                if vm.device?.connected != true && vm.awaitingTrust {
+                    // Not looked at again on its own while waiting on Trust (see
+                    // shouldLookForDevice), so a spinner here would be a promise
+                    // the app is not keeping. Tapping Trust changes nothing on the
+                    // Mac's side; this is how the app finds out.
+                    Button(action: { vm.checkDevice() }) {
+                        HStack(spacing: 6) {
+                            if vm.isCheckingDevice {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            Text(L("ui.check_again", "Check Again"))
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(vm.isCheckingDevice)
+                } else if vm.device?.connected != true {
                     // The app keeps looking on its own, so there is nothing to
                     // press here; say that it is looking.
                     HStack(spacing: 8) {
@@ -4602,21 +5459,6 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             if let image = NSImage(contentsOf: url) {
                 vm.openDesigner(for: cardId, image: image)
-            } else {
-                vm.errorMessage = L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG.")
-            }
-        }
-    }
-    
-    private func openBulkImagePicker() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.message = L("panel.choose_skin_all", "Choose a skin to assign to all selected cards...")
-        if panel.runModal() == .OK, let url = panel.url {
-            if let image = NSImage(contentsOf: url) {
-                vm.openDesignerForAllSelected(image: image)
             } else {
                 vm.errorMessage = L("error.image_unreadable", "That picture could not be opened. Try a PNG or JPEG.")
             }

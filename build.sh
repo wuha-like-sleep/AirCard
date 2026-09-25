@@ -171,6 +171,14 @@ done
 
 echo "==> [6/6] Generating styled DMG (${APP_NAME}.dmg)..."
 DMG_STAGING="/tmp/aircard_dmg_staging"
+# A signed build opens normally once notarised; only a self-built ad-hoc copy
+# needs the first-launch workaround, and telling everyone to use it sends people
+# through System Settings for nothing.
+if [ "$CODESIGN_IDENTITY" = "-" ]; then
+    DMG_README="dmg_assets/README.txt"
+else
+    DMG_README="dmg_assets/README-signed.txt"
+fi
 rm -rf "$DMG_STAGING"
 mkdir -p "$DMG_STAGING"
 cp -R "$APP_DIR" "$DMG_STAGING/"
@@ -187,13 +195,14 @@ if command -v create-dmg >/dev/null 2>&1; then
         --icon "AirCard.app" 175 220 \
         --hide-extension "AirCard.app" \
         --app-drop-link 525 220 \
-        --add-file "README.txt" "dmg_assets/README.txt" 350 360 \
+        --add-file "README.txt" "$DMG_README" 350 360 \
         --filesystem APFS \
         --overwrite \
         "build/${APP_NAME}.dmg" \
         "$DMG_STAGING"
 else
     ln -s /Applications "$DMG_STAGING/Applications"
+    cp "$DMG_README" "$DMG_STAGING/README.txt"
     hdiutil create -volname "AirCard" -srcfolder "$DMG_STAGING" -ov -format UDZO "build/${APP_NAME}.dmg"
 fi
 
